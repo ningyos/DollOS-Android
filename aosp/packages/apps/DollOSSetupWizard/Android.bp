@@ -1,0 +1,17 @@
+android_app {
+    name: "DollOSSetupWizard",
+    srcs: [
+        "src/**/*.kt",
+    ],
+    resource_dirs: ["res"],
+    platform_apis: true,
+    privileged: true,
+    certificate: "platform",
+    overrides: ["SetupWizard2", "Provision"],
+    static_libs: [
+        "androidx.core_core-ktx",
+        "androidx.appcompat_appcompat",
+        "com.google.android.material_material",
+    ],
+    kotlincflags: ["-Xjvm-default=all"],
+}
