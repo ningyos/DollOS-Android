@@ -84,7 +84,7 @@ git config --global user.email "you@example.com"
 Use the following layout to keep build artifacts and signing keys organized:
 
 ```
-~/dollos-build/    - AOSP source tree and all build output
+~/Desktop/DollOS-build/    - AOSP source tree and all build output
 ~/dollos-keys/     - Signing keys (see docs/key-management.md)
 ```
 
@@ -146,6 +146,6 @@ A full clean build takes 1 to 3 hours on modern hardware depending on core count
 Prerequisite: unlock the bootloader (one-time, Developer Options > OEM Unlocking, then reboot to fastboot and run `fastboot flashing unlock`).
 
 ```bash
-cd ~/dollos-build/out/target/product/bluejay/
+cd ~/Desktop/DollOS-build/out/target/product/bluejay/
 fastboot flashall -w
 ```
