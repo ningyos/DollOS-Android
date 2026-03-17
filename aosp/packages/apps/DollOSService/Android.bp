@@ -1,0 +1,17 @@
+android_app {
+    name: "DollOSService",
+    srcs: [
+        "src/**/*.kt",
+    ],
+    aidl: {
+        local_include_dirs: ["aidl"],
+        srcs: ["aidl/**/*.aidl"],
+    },
+    platform_apis: true,
+    privileged: true,
+    certificate: "platform",
+    static_libs: [
+        "androidx.core_core-ktx",
+    ],
+    kotlincflags: ["-Xjvm-default=all"],
+}

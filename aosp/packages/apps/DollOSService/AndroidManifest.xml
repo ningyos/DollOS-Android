@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.dollos.service">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:label="DollOS Service"
+        android:persistent="true"
+        android:directBootAware="true">
+
+        <service
+            android:name=".DollOSService"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="org.dollos.service.IDollOSService" />
+            </intent-filter>
+        </service>
+
+    </application>
+</manifest>
