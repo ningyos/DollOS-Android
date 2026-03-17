@@ -97,21 +97,55 @@ mkdir -p ~/dollos-keys
 
 ## Initialize the Source Tree
 
+DollOS is based on GrapheneOS. The manifest repository is a fork of GrapheneOS's manifest with DollOS-specific repo entries added.
+
 ```bash
 cd ~/dollos-build
-repo init -u https://github.com/<your-org>/DollOS-manifest -b main
-repo sync -c -j$(nproc) --no-tags
+
+# Use the DollOS fork of GrapheneOS manifest (branch 16, based on AOSP 16)
+repo init -u https://github.com/dollos/platform_manifest.git -b 16 --depth=1
+repo sync -j$(nproc) --no-tags --no-clone-bundle
 ```
 
-Replace `<your-org>` with the actual manifest repository path once it is published.
+This syncs the full GrapheneOS/AOSP source tree (~90GB+). Depending on network speed, this may take several hours.
+
+## Extract Vendor Binaries
+
+GrapheneOS uses `adevtool` to extract proprietary vendor binaries for Pixel devices:
+
+```bash
+cd ~/dollos-build
+source build/envsetup.sh
+
+# Install adevtool dependencies
+yarn --cwd vendor/adevtool/ install
+
+# Extract vendor binaries for Pixel 6a (bluejay)
+# Option A: from a connected device running GrapheneOS
+node vendor/adevtool/bin/adevtool generate-all -d bluejay -s
+
+# Option B: from a downloaded factory image
+# node vendor/adevtool/bin/adevtool generate-all -d bluejay -b ~/dollos-build
+```
+
+Consult the GrapheneOS build documentation if the `adevtool` CLI has changed since this guide was written.
 
 ## Build
 
 ```bash
 cd ~/dollos-build
 source build/envsetup.sh
-lunch aosp_bluejay-user
+lunch dollos_bluejay-cur-userdebug
 m -j$(nproc)
 ```
 
-A full clean build takes 1 to 3 hours on modern hardware depending on core count and disk speed. Ensure the machine does not suspend during the build.
+A full clean build takes 1 to 3 hours on modern hardware depending on core count and disk speed. Ensure the machine does not suspend during the build. Output images will be in `out/target/product/bluejay/`.
+
+## Flash to Pixel 6a
+
+Prerequisite: unlock the bootloader (one-time, Developer Options > OEM Unlocking, then reboot to fastboot and run `fastboot flashing unlock`).
+
+```bash
+cd ~/dollos-build/out/target/product/bluejay/
+fastboot flashall -w
+```
