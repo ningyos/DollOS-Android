@@ -2,10 +2,10 @@ android_app {
     name: "DollOSService",
     srcs: [
         "src/**/*.kt",
+        "aidl/**/*.aidl",
     ],
     aidl: {
         local_include_dirs: ["aidl"],
-        srcs: ["aidl/**/*.aidl"],
     },
     platform_apis: true,
     privileged: true,
