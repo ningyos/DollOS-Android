@@ -2,68 +2,86 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the persistent memory system and conversation engine for DollOS AI. This includes a three-tier Markdown memory architecture (inspired by OpenClaw), an ObjectBox-backed hybrid search index (vector + BM25), a serialized memory write queue with retry logic, date-segmented conversation management, proactive context compression, and memory export/import via ParcelFileDescriptor.
+**Goal:** Build the persistent memory system and conversation engine for DollOS AI. This includes a three-tier Markdown memory architecture (inspired by OpenClaw), a sqlite-vec + FTS5 hybrid search index (vector + BM25), a serialized memory write queue with retry logic, date-segmented conversation management, proactive context compression, and memory export/import via ParcelFileDescriptor.
 
-**Architecture:** Markdown files are the single source of truth, stored in DollOSAIService's internal storage (`/data/user/0/org.dollos.ai/files/memory/`). ObjectBox provides a local vector index for hybrid search (semantic + keyword). All memory writes flow through a single serialized queue to prevent race conditions. The conversation engine segments by date and proactively compresses context at 70-80% capacity using the foreground model asynchronously.
+**Architecture:** Markdown files are the single source of truth, stored in DollOSAIService's internal storage (`/data/user/0/org.dollos.ai/files/memory/`). sqlite-vec provides vector search via a SQLite extension, and FTS5 provides BM25 keyword search. Both are backed by a single SQLite database. All memory writes flow through a single serialized queue to prevent race conditions. The conversation engine segments by date and proactively compresses context at 70-80% capacity using the foreground model asynchronously.
 
-**Tech Stack:** Kotlin, ObjectBox (Android vector database), ONNX Runtime (local embedding -- placeholder for v1), coroutines (async compression, write queue), AIDL (memory export/import), ParcelFileDescriptor (scoped storage), JSON (pending writes, config)
+**Tech Stack:** Kotlin, sqlite-vec (SQLite extension for vector search), FTS5 (built into Android SQLite, BM25 keyword search), OkHttp (cloud embedding API calls), coroutines (async compression, write queue), AIDL (memory export/import), ParcelFileDescriptor (scoped storage), JSON (pending writes, config)
 
-**Depends on:** Plan A (DollOSAIService skeleton must exist). Plan B adds modules to the existing service.
+**Depends on:** Plan A (DollOSAIService Gradle project skeleton must exist). Plan B adds modules to the existing Gradle project.
+
+**Key difference from previous revision:** DollOSAIService is now a Gradle Android project (not AOSP Soong). ObjectBox is replaced by sqlite-vec for vector search. No annotation processing is needed. The sqlite-vec native library (.so) is bundled in jniLibs and loaded at runtime.
 
 ---
 
 ## File Structure
 
-### DollOSAIService (additions to existing from Plan A)
+### DollOSAIService (additions to existing Gradle project from Plan A)
 
 ```
-packages/apps/DollOSAIService/
-  src/org/dollos/ai/
+app/src/main/
+  jniLibs/arm64-v8a/
+    vec0.so                                -- sqlite-vec native library (pre-compiled ARM64)
+  java/org/dollos/ai/
     memory/
-      MemoryManager.kt         -- main memory orchestrator
-      MemoryTier.kt            -- tier enum and config
-      MarkdownMemoryStore.kt   -- read/write Markdown files
-      MemoryWriteQueue.kt      -- serialized write queue with retry
-      MemorySearchEngine.kt    -- hybrid search (vector + BM25)
-      ObjectBoxIndex.kt        -- ObjectBox vector index wrapper
-      EmbeddingProvider.kt     -- interface for embedding generation
-      CloudEmbeddingProvider.kt -- cloud API embedding (OpenAI)
-      LocalEmbeddingProvider.kt -- local ONNX embedding (placeholder)
-      MemoryExporter.kt        -- export/import via ParcelFileDescriptor
+      MemoryManager.kt                     -- main memory orchestrator
+      MemoryTier.kt                        -- tier enum and config
+      MarkdownStore.kt                     -- read/write Markdown files (source of truth)
+      MemoryDatabase.kt                    -- SQLite database (FTS5 + vec0 index)
+      MemorySearchEngine.kt                -- hybrid search (vector + BM25)
+      MemoryWriteQueue.kt                  -- serialized write queue with retry
+      EmbeddingProvider.kt                 -- interface for embedding generation
+      CloudEmbeddingProvider.kt            -- OpenAI text-embedding-3-small via OkHttp
+      LocalEmbeddingProvider.kt            -- placeholder (zero vectors)
+      MemoryExporter.kt                    -- export/import via ParcelFileDescriptor
     conversation/
-      ConversationManager.kt   -- manages conversation state and history
-      ConversationSegment.kt   -- date-based conversation segment
-      ContextCompressor.kt     -- proactive context compression
-      MessageStore.kt          -- persists conversation messages
+      ConversationManager.kt               -- conversation state + history
+      ConversationSegment.kt               -- date-based conversation segment
+      ContextCompressor.kt                 -- proactive context compression
+      MessageStore.kt                      -- message persistence (SQLite)
 ```
 
-### ObjectBox and ONNX prebuilts
+### Gradle dependency additions (in app/build.gradle.kts)
+
+```kotlin
+dependencies {
+    // OkHttp for cloud embedding API calls
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+}
+```
+
+No additional Gradle dependencies are needed for sqlite-vec (it is a native .so loaded at runtime) or FTS5 (built into Android's SQLite).
+
+### sqlite-vec setup
+
+Pre-compiled ARM64 binary from GitHub releases: https://github.com/asg017/sqlite-vec
+
+Download the `sqlite-vec-<version>-android-aarch64.tar.gz` release artifact, extract `vec0.so`, and place it at:
 
 ```
-prebuilts/dollos/
-  objectbox/
-    objectbox-android-4.0.3.jar     -- ObjectBox runtime JAR
-    objectbox-kotlin-4.0.3.jar      -- ObjectBox Kotlin extensions
-    libobjectbox-jni.so             -- native JNI lib (arm64-v8a)
-    Android.bp                      -- prebuilt module definitions
-  onnxruntime/
-    onnxruntime-android-1.17.0.aar  -- ONNX Runtime Android AAR
-    Android.bp                      -- prebuilt module definition
+app/src/main/jniLibs/arm64-v8a/vec0.so
+```
+
+At runtime, load the extension before use:
+
+```kotlin
+val db = SQLiteDatabase.openOrCreateDatabase(dbPath, null)
+db.loadExtension("vec0")
 ```
 
 ---
 
-## Task 1: Memory Tier Definitions and MarkdownMemoryStore
+## Task 1: Memory Tier Definitions and Markdown Store
 
 **Goal:** Define the three-tier memory structure and implement basic Markdown file I/O for reading and writing memory files.
 
 **Files:**
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/memory/MemoryTier.kt`
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/memory/MarkdownMemoryStore.kt`
+- Create: `app/src/main/java/org/dollos/ai/memory/MemoryTier.kt`
+- Create: `app/src/main/java/org/dollos/ai/memory/MarkdownStore.kt`
 
 - [ ] **Step 1: Create MemoryTier.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/memory/MemoryTier.kt`:
+Create `app/src/main/java/org/dollos/ai/memory/MemoryTier.kt`:
 
 ```kotlin
 package org.dollos.ai.memory
@@ -96,9 +114,9 @@ enum class DeepMemoryCategory(val dirName: String) {
 }
 ```
 
-- [ ] **Step 2: Create MarkdownMemoryStore.kt**
+- [ ] **Step 2: Create MarkdownStore.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/memory/MarkdownMemoryStore.kt`:
+Create `app/src/main/java/org/dollos/ai/memory/MarkdownStore.kt`:
 
 ```kotlin
 package org.dollos.ai.memory
@@ -122,10 +140,10 @@ import java.time.format.DateTimeFormatter
  *   memory/topics/cooking.md     -- Tier 3 (deep)
  *   memory/decisions/phone.md    -- Tier 3 (deep)
  */
-class MarkdownMemoryStore(private val rootDir: File) {
+class MarkdownStore(private val rootDir: File) {
 
     companion object {
-        private const val TAG = "MarkdownMemoryStore"
+        private const val TAG = "MarkdownStore"
         private const val CORE_FILENAME = "MEMORY.md"
         private val DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd")
     }
@@ -325,7 +343,8 @@ class MarkdownMemoryStore(private val rootDir: File) {
 
 ```bash
 cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add src/org/dollos/ai/memory/MemoryTier.kt src/org/dollos/ai/memory/MarkdownMemoryStore.kt
+git add app/src/main/java/org/dollos/ai/memory/MemoryTier.kt
+git add app/src/main/java/org/dollos/ai/memory/MarkdownStore.kt
 git commit -m "feat: add three-tier memory definitions and Markdown file store"
 ```
 
@@ -336,11 +355,11 @@ git commit -m "feat: add three-tier memory definitions and Markdown file store"
 **Goal:** Implement a single serialized write queue that all memory writes flow through, with retry logic and pending_writes.json persistence for failure recovery.
 
 **Files:**
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/memory/MemoryWriteQueue.kt`
+- Create: `app/src/main/java/org/dollos/ai/memory/MemoryWriteQueue.kt`
 
 - [ ] **Step 1: Create MemoryWriteQueue.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/memory/MemoryWriteQueue.kt`:
+Create `app/src/main/java/org/dollos/ai/memory/MemoryWriteQueue.kt`:
 
 ```kotlin
 package org.dollos.ai.memory
@@ -368,7 +387,7 @@ import java.time.LocalDate
  *   3. On next startup, replay pending writes before normal operation
  */
 class MemoryWriteQueue(
-    private val store: MarkdownMemoryStore,
+    private val store: MarkdownStore,
     private val rootDir: File,
     private val onWriteComplete: ((MemoryWriteOp) -> Unit)? = null
 ) {
@@ -616,24 +635,533 @@ class MemoryWriteQueue(
 
 ```bash
 cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add src/org/dollos/ai/memory/MemoryWriteQueue.kt
+git add app/src/main/java/org/dollos/ai/memory/MemoryWriteQueue.kt
 git commit -m "feat: add serialized memory write queue with retry and pending persistence"
 ```
 
 ---
 
-## Task 3: Embedding Provider Interface and Implementations
+## Task 3: SQLite Database with sqlite-vec and FTS5
 
-**Goal:** Define the embedding provider interface, implement cloud embedding (OpenAI text-embedding-3-small), and a local ONNX placeholder that returns zero vectors.
+**Goal:** Set up the SQLite database that holds both the vec0 virtual table (vector search) and FTS5 table (keyword search). This replaces ObjectBox from the previous plan.
 
 **Files:**
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/memory/EmbeddingProvider.kt`
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/memory/CloudEmbeddingProvider.kt`
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/memory/LocalEmbeddingProvider.kt`
+- Download: `app/src/main/jniLibs/arm64-v8a/vec0.so` (from sqlite-vec GitHub releases)
+- Create: `app/src/main/java/org/dollos/ai/memory/MemoryDatabase.kt`
+
+- [ ] **Step 1: Download vec0.so**
+
+Download the pre-compiled ARM64 sqlite-vec binary from GitHub releases and place it in the jniLibs directory:
+
+```bash
+cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
+
+mkdir -p app/src/main/jniLibs/arm64-v8a
+
+# Download from: https://github.com/asg017/sqlite-vec/releases
+# Pick the latest stable release, download sqlite-vec-<version>-android-aarch64.tar.gz
+# Extract vec0.so and place it:
+# cp vec0.so app/src/main/jniLibs/arm64-v8a/vec0.so
+```
+
+Verify the file exists:
+
+```bash
+ls -la app/src/main/jniLibs/arm64-v8a/vec0.so
+```
+
+- [ ] **Step 2: Create MemoryDatabase.kt**
+
+Create `app/src/main/java/org/dollos/ai/memory/MemoryDatabase.kt`:
+
+```kotlin
+package org.dollos.ai.memory
+
+import android.content.ContentValues
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
+import android.util.Log
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+
+/**
+ * SQLite database for memory search indexing.
+ *
+ * Uses two search mechanisms:
+ *   1. sqlite-vec (vec0 virtual table) for vector similarity search
+ *   2. FTS5 for BM25 keyword search
+ *
+ * This database is purely a search index -- Markdown files are the source of truth.
+ * If the database is corrupted or missing, it can be fully rebuilt from Markdown files.
+ *
+ * Schema:
+ *   - memory_chunks: metadata table (rowid, file_path, chunk_text, file_modified_at)
+ *   - memory_chunks_fts: FTS5 virtual table for BM25 keyword search
+ *   - memory_chunks_vec: vec0 virtual table for vector similarity search
+ */
+class MemoryDatabase(
+    context: Context,
+    private val embeddingDimension: Int = 384
+) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
+
+    companion object {
+        private const val TAG = "MemoryDatabase"
+        private const val DB_NAME = "memory_index.db"
+        private const val DB_VERSION = 1
+    }
+
+    private var vec0Available = false
+
+    /**
+     * Initialize the database and attempt to load the sqlite-vec extension.
+     * Call this once after construction.
+     */
+    fun initialize() {
+        // Force database creation
+        val db = writableDatabase
+
+        // Attempt to load sqlite-vec extension
+        try {
+            db.execSQL("SELECT load_extension('vec0')")
+            vec0Available = true
+            Log.i(TAG, "sqlite-vec extension loaded successfully")
+        } catch (e: Exception) {
+            Log.w(TAG, "sqlite-vec extension not available: ${e.message}")
+            Log.w(TAG, "Vector search will be disabled, FTS5 keyword search only")
+            vec0Available = false
+        }
+
+        // Create vec0 virtual table if extension is available
+        if (vec0Available) {
+            try {
+                db.execSQL("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS memory_chunks_vec
+                    USING vec0(embedding float[$embeddingDimension])
+                """.trimIndent())
+                Log.i(TAG, "vec0 virtual table created (dimension=$embeddingDimension)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to create vec0 virtual table", e)
+                vec0Available = false
+            }
+        }
+    }
+
+    /**
+     * Whether the sqlite-vec extension is available for vector search.
+     */
+    fun isVec0Available(): Boolean = vec0Available
+
+    override fun onCreate(db: SQLiteDatabase) {
+        // Metadata table for memory chunks
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS memory_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT NOT NULL,
+                chunk_text TEXT NOT NULL,
+                file_modified_at INTEGER NOT NULL
+            )
+        """.trimIndent())
+
+        // FTS5 virtual table for BM25 keyword search
+        // content= links to memory_chunks table for content sync
+        db.execSQL("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_chunks_fts
+            USING fts5(chunk_text, content=memory_chunks, content_rowid=id)
+        """.trimIndent())
+
+        // Triggers to keep FTS5 in sync with memory_chunks
+        db.execSQL("""
+            CREATE TRIGGER IF NOT EXISTS memory_chunks_ai AFTER INSERT ON memory_chunks BEGIN
+                INSERT INTO memory_chunks_fts(rowid, chunk_text)
+                VALUES (new.id, new.chunk_text);
+            END
+        """.trimIndent())
+
+        db.execSQL("""
+            CREATE TRIGGER IF NOT EXISTS memory_chunks_ad AFTER DELETE ON memory_chunks BEGIN
+                INSERT INTO memory_chunks_fts(memory_chunks_fts, rowid, chunk_text)
+                VALUES ('delete', old.id, old.chunk_text);
+            END
+        """.trimIndent())
+
+        db.execSQL("""
+            CREATE TRIGGER IF NOT EXISTS memory_chunks_au AFTER UPDATE ON memory_chunks BEGIN
+                INSERT INTO memory_chunks_fts(memory_chunks_fts, rowid, chunk_text)
+                VALUES ('delete', old.id, old.chunk_text);
+                INSERT INTO memory_chunks_fts(rowid, chunk_text)
+                VALUES (new.id, new.chunk_text);
+            END
+        """.trimIndent())
+
+        // Index on file_path for fast lookups by file
+        db.execSQL("""
+            CREATE INDEX IF NOT EXISTS idx_chunks_file_path ON memory_chunks(file_path)
+        """.trimIndent())
+
+        Log.i(TAG, "Database created with FTS5 tables")
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        // For v1, drop and recreate. The database is a search index that can be rebuilt.
+        db.execSQL("DROP TABLE IF EXISTS memory_chunks")
+        db.execSQL("DROP TABLE IF EXISTS memory_chunks_fts")
+        if (vec0Available) {
+            db.execSQL("DROP TABLE IF EXISTS memory_chunks_vec")
+        }
+        onCreate(db)
+        Log.i(TAG, "Database upgraded from $oldVersion to $newVersion (full rebuild needed)")
+    }
+
+    // -- Indexing operations --
+
+    /**
+     * Index a memory file. Splits content into chunks and stores with embeddings.
+     * Replaces any existing chunks for the same file path.
+     *
+     * @param filePath Relative path of the source Markdown file.
+     * @param chunks Pre-split text chunks from the file.
+     * @param embeddings Embedding vectors for each chunk (same order as chunks).
+     * @param fileModifiedAt Last modified timestamp of the source file.
+     */
+    fun indexFile(
+        filePath: String,
+        chunks: List<String>,
+        embeddings: List<FloatArray>,
+        fileModifiedAt: Long
+    ) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            // Remove old chunks for this file
+            removeFileChunks(db, filePath)
+
+            // Insert new chunks
+            for (i in chunks.indices) {
+                val values = ContentValues().apply {
+                    put("file_path", filePath)
+                    put("chunk_text", chunks[i])
+                    put("file_modified_at", fileModifiedAt)
+                }
+                val rowId = db.insert("memory_chunks", null, values)
+
+                // Insert embedding into vec0 if available
+                if (vec0Available && i < embeddings.size) {
+                    insertVec0Embedding(db, rowId, embeddings[i])
+                }
+            }
+
+            db.setTransactionSuccessful()
+            Log.i(TAG, "Indexed $filePath: ${chunks.size} chunks")
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /**
+     * Remove all chunks for a file path.
+     */
+    fun removeFile(filePath: String) {
+        val db = writableDatabase
+        removeFileChunks(db, filePath)
+    }
+
+    /**
+     * Remove all data from the database.
+     */
+    fun removeAll() {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL("DELETE FROM memory_chunks")
+            if (vec0Available) {
+                db.execSQL("DELETE FROM memory_chunks_vec")
+            }
+            db.setTransactionSuccessful()
+            Log.i(TAG, "Cleared all indexed data")
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    // -- Search operations --
+
+    /**
+     * Vector similarity search using sqlite-vec (vec0).
+     * Returns a list of (rowId, distance) pairs sorted by distance ascending.
+     *
+     * @param queryEmbedding The query embedding vector.
+     * @param limit Maximum number of results.
+     * @return List of (rowId, distance) pairs. Empty if vec0 is not available.
+     */
+    fun vectorSearch(queryEmbedding: FloatArray, limit: Int): List<Pair<Long, Float>> {
+        if (!vec0Available) return emptyList()
+
+        val db = readableDatabase
+        val results = mutableListOf<Pair<Long, Float>>()
+
+        val embeddingBlob = floatArrayToBlob(queryEmbedding)
+
+        try {
+            val cursor = db.rawQuery(
+                "SELECT rowid, distance FROM memory_chunks_vec WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
+                arrayOf(embeddingBlob.toString(), limit.toString())
+            )
+            // Note: sqlite-vec expects the embedding as a blob parameter.
+            // Use the blob binding approach via a compiled statement.
+            cursor.close()
+
+            // Use compiled statement for proper blob binding
+            val stmt = db.compileStatement(
+                "SELECT rowid, distance FROM memory_chunks_vec WHERE embedding MATCH ? ORDER BY distance LIMIT ?"
+            )
+            // Unfortunately, Android's SQLiteStatement doesn't support SELECT.
+            // Use rawQuery with hex-encoded blob instead.
+
+            val hexBlob = bytesToHex(embeddingBlob)
+            val queryCursor = db.rawQuery(
+                "SELECT rowid, distance FROM memory_chunks_vec WHERE embedding MATCH x'$hexBlob' ORDER BY distance LIMIT $limit",
+                null
+            )
+
+            queryCursor.use { c ->
+                while (c.moveToNext()) {
+                    val rowId = c.getLong(0)
+                    val distance = c.getFloat(1)
+                    results.add(rowId to distance)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Vector search failed", e)
+        }
+
+        return results
+    }
+
+    /**
+     * BM25 keyword search using FTS5.
+     * Returns a list of (rowId, bm25Score) pairs sorted by relevance.
+     *
+     * @param query The search query string.
+     * @param limit Maximum number of results.
+     * @return List of (rowId, bm25Score) pairs.
+     */
+    fun fts5Search(query: String, limit: Int): List<Pair<Long, Float>> {
+        val db = readableDatabase
+        val results = mutableListOf<Pair<Long, Float>>()
+
+        // Escape FTS5 special characters
+        val safeQuery = query.replace("\"", "\"\"")
+
+        try {
+            val cursor = db.rawQuery(
+                """
+                SELECT rowid, bm25(memory_chunks_fts)
+                FROM memory_chunks_fts
+                WHERE memory_chunks_fts MATCH ?
+                ORDER BY bm25(memory_chunks_fts)
+                LIMIT ?
+                """.trimIndent(),
+                arrayOf(safeQuery, limit.toString())
+            )
+
+            cursor.use { c ->
+                while (c.moveToNext()) {
+                    val rowId = c.getLong(0)
+                    // FTS5 bm25() returns negative values (lower = better match)
+                    // Negate it so higher = better
+                    val bm25Score = -c.getFloat(1)
+                    results.add(rowId to bm25Score)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "FTS5 search failed for query: $query", e)
+        }
+
+        return results
+    }
+
+    /**
+     * Get chunk metadata by rowId.
+     */
+    fun getChunk(rowId: Long): ChunkRecord? {
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT id, file_path, chunk_text, file_modified_at FROM memory_chunks WHERE id = ?",
+            arrayOf(rowId.toString())
+        )
+
+        return cursor.use { c ->
+            if (c.moveToFirst()) {
+                ChunkRecord(
+                    id = c.getLong(0),
+                    filePath = c.getString(1),
+                    chunkText = c.getString(2),
+                    fileModifiedAt = c.getLong(3)
+                )
+            } else {
+                null
+            }
+        }
+    }
+
+    /**
+     * Get multiple chunks by rowIds.
+     */
+    fun getChunks(rowIds: List<Long>): Map<Long, ChunkRecord> {
+        if (rowIds.isEmpty()) return emptyMap()
+
+        val db = readableDatabase
+        val placeholders = rowIds.joinToString(",") { "?" }
+        val args = rowIds.map { it.toString() }.toTypedArray()
+
+        val result = mutableMapOf<Long, ChunkRecord>()
+        val cursor = db.rawQuery(
+            "SELECT id, file_path, chunk_text, file_modified_at FROM memory_chunks WHERE id IN ($placeholders)",
+            args
+        )
+
+        cursor.use { c ->
+            while (c.moveToNext()) {
+                val id = c.getLong(0)
+                result[id] = ChunkRecord(
+                    id = id,
+                    filePath = c.getString(1),
+                    chunkText = c.getString(2),
+                    fileModifiedAt = c.getLong(3)
+                )
+            }
+        }
+
+        return result
+    }
+
+    /**
+     * Check if a file is indexed and up to date.
+     */
+    fun isFileIndexed(filePath: String, currentModifiedAt: Long): Boolean {
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT file_modified_at FROM memory_chunks WHERE file_path = ? LIMIT 1",
+            arrayOf(filePath)
+        )
+
+        return cursor.use { c ->
+            if (c.moveToFirst()) {
+                val indexedAt = c.getLong(0)
+                indexedAt >= currentModifiedAt
+            } else {
+                false
+            }
+        }
+    }
+
+    /**
+     * Get the count of indexed chunks.
+     */
+    fun chunkCount(): Int {
+        val db = readableDatabase
+        val cursor = db.rawQuery("SELECT COUNT(*) FROM memory_chunks", null)
+        return cursor.use { c ->
+            if (c.moveToFirst()) c.getInt(0) else 0
+        }
+    }
+
+    // -- Private helpers --
+
+    private fun removeFileChunks(db: SQLiteDatabase, filePath: String) {
+        // Get rowIds for vec0 cleanup
+        if (vec0Available) {
+            val cursor = db.rawQuery(
+                "SELECT id FROM memory_chunks WHERE file_path = ?",
+                arrayOf(filePath)
+            )
+            cursor.use { c ->
+                while (c.moveToNext()) {
+                    val rowId = c.getLong(0)
+                    try {
+                        db.execSQL("DELETE FROM memory_chunks_vec WHERE rowid = ?", arrayOf(rowId))
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to delete vec0 row $rowId", e)
+                    }
+                }
+            }
+        }
+
+        // Delete from metadata table (triggers handle FTS5 sync)
+        db.delete("memory_chunks", "file_path = ?", arrayOf(filePath))
+    }
+
+    private fun insertVec0Embedding(db: SQLiteDatabase, rowId: Long, embedding: FloatArray) {
+        try {
+            val blob = floatArrayToBlob(embedding)
+            val hexBlob = bytesToHex(blob)
+            db.execSQL(
+                "INSERT INTO memory_chunks_vec(rowid, embedding) VALUES (?, x'$hexBlob')",
+                arrayOf(rowId)
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to insert vec0 embedding for rowid=$rowId", e)
+        }
+    }
+
+    /**
+     * Convert a FloatArray to a little-endian byte array (blob format for sqlite-vec).
+     */
+    private fun floatArrayToBlob(arr: FloatArray): ByteArray {
+        val buffer = ByteBuffer.allocate(arr.size * 4).order(ByteOrder.LITTLE_ENDIAN)
+        for (f in arr) {
+            buffer.putFloat(f)
+        }
+        return buffer.array()
+    }
+
+    /**
+     * Convert a byte array to a hex string for SQL embedding.
+     */
+    private fun bytesToHex(bytes: ByteArray): String {
+        val sb = StringBuilder(bytes.size * 2)
+        for (b in bytes) {
+            sb.append(String.format("%02x", b))
+        }
+        return sb.toString()
+    }
+}
+
+/**
+ * A record from the memory_chunks table.
+ */
+data class ChunkRecord(
+    val id: Long,
+    val filePath: String,
+    val chunkText: String,
+    val fileModifiedAt: Long
+)
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
+git add app/src/main/jniLibs/arm64-v8a/vec0.so
+git add app/src/main/java/org/dollos/ai/memory/MemoryDatabase.kt
+git commit -m "feat: add SQLite database with sqlite-vec and FTS5 for memory search index"
+```
+
+---
+
+## Task 4: Embedding Provider Interface and Implementations
+
+**Goal:** Define the embedding provider interface, implement cloud embedding (OpenAI text-embedding-3-small via OkHttp), and a local placeholder that returns zero vectors.
+
+**Files:**
+- Create: `app/src/main/java/org/dollos/ai/memory/EmbeddingProvider.kt`
+- Create: `app/src/main/java/org/dollos/ai/memory/CloudEmbeddingProvider.kt`
+- Create: `app/src/main/java/org/dollos/ai/memory/LocalEmbeddingProvider.kt`
 
 - [ ] **Step 1: Create EmbeddingProvider.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/memory/EmbeddingProvider.kt`:
+Create `app/src/main/java/org/dollos/ai/memory/EmbeddingProvider.kt`:
 
 ```kotlin
 package org.dollos.ai.memory
@@ -643,8 +1171,11 @@ package org.dollos.ai.memory
  * Used by the memory search engine for vector similarity search.
  *
  * Two implementations:
- *   - CloudEmbeddingProvider: OpenAI text-embedding-3-small (1536 dims)
- *   - LocalEmbeddingProvider: local ONNX all-MiniLM-L6-v2 (384 dims) -- placeholder for v1
+ *   - CloudEmbeddingProvider: OpenAI text-embedding-3-small (384 dims via shortening)
+ *   - LocalEmbeddingProvider: placeholder returning zero vectors (384 dims)
+ *
+ * Dimension is fixed at 384 for sqlite-vec table compatibility.
+ * OpenAI text-embedding-3-small supports dimension shortening via the "dimensions" parameter.
  */
 interface EmbeddingProvider {
 
@@ -676,22 +1207,27 @@ interface EmbeddingProvider {
 
 - [ ] **Step 2: Create CloudEmbeddingProvider.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/memory/CloudEmbeddingProvider.kt`:
+Create `app/src/main/java/org/dollos/ai/memory/CloudEmbeddingProvider.kt`:
 
 ```kotlin
 package org.dollos.ai.memory
 
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
+import java.util.concurrent.TimeUnit
 
 /**
  * Cloud embedding via OpenAI text-embedding-3-small API.
- * Dimension: 1536.
+ * Dimension: 384 (via OpenAI's dimension shortening parameter).
  *
+ * Uses OkHttp for HTTP requests (from Plan A's existing dependency).
  * Requires a valid OpenAI API key set via [setApiKey].
  */
 class CloudEmbeddingProvider : EmbeddingProvider {
@@ -700,7 +1236,7 @@ class CloudEmbeddingProvider : EmbeddingProvider {
         private const val TAG = "CloudEmbeddingProvider"
         private const val OPENAI_EMBEDDING_URL = "https://api.openai.com/v1/embeddings"
         private const val MODEL = "text-embedding-3-small"
-        private const val EMBEDDING_DIMENSION = 1536
+        private const val EMBEDDING_DIMENSION = 384
     }
 
     override val dimension: Int = EMBEDDING_DIMENSION
@@ -709,11 +1245,16 @@ class CloudEmbeddingProvider : EmbeddingProvider {
 
     private var apiKey: String = ""
 
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build()
+
     fun setApiKey(key: String) {
         apiKey = key
     }
 
-    override suspend fun embed(text: String): FloatArray {
+    override suspend fun embed(text: String): FloatArray = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) {
             throw IllegalStateException("OpenAI API key not set for embedding")
         }
@@ -721,93 +1262,80 @@ class CloudEmbeddingProvider : EmbeddingProvider {
         val requestBody = JSONObject().apply {
             put("input", text)
             put("model", MODEL)
+            put("dimensions", EMBEDDING_DIMENSION)
         }
 
-        val connection = URL(OPENAI_EMBEDDING_URL).openConnection() as HttpURLConnection
-        try {
-            connection.requestMethod = "POST"
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.setRequestProperty("Authorization", "Bearer $apiKey")
-            connection.doOutput = true
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 30_000
+        val request = Request.Builder()
+            .url(OPENAI_EMBEDDING_URL)
+            .addHeader("Authorization", "Bearer $apiKey")
+            .addHeader("Content-Type", "application/json")
+            .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
+            .build()
 
-            OutputStreamWriter(connection.outputStream).use { writer ->
-                writer.write(requestBody.toString())
-            }
-
-            val responseCode = connection.responseCode
-            if (responseCode != 200) {
-                val errorBody = connection.errorStream?.bufferedReader()?.readText() ?: ""
+        val response = client.newCall(request).execute()
+        response.use { resp ->
+            if (!resp.isSuccessful) {
+                val errorBody = resp.body?.string() ?: ""
                 throw RuntimeException(
-                    "OpenAI embedding API returned $responseCode: $errorBody"
+                    "OpenAI embedding API returned ${resp.code}: $errorBody"
                 )
             }
 
-            val responseBody = connection.inputStream.bufferedReader().readText()
-            val json = JSONObject(responseBody)
+            val json = JSONObject(resp.body!!.string())
             val embeddingArray = json
                 .getJSONArray("data")
                 .getJSONObject(0)
                 .getJSONArray("embedding")
 
-            return jsonArrayToFloatArray(embeddingArray)
-        } finally {
-            connection.disconnect()
+            jsonArrayToFloatArray(embeddingArray)
         }
     }
 
-    override suspend fun embedBatch(texts: List<String>): List<FloatArray> {
-        if (apiKey.isBlank()) {
-            throw IllegalStateException("OpenAI API key not set for embedding")
-        }
-        if (texts.isEmpty()) return emptyList()
+    override suspend fun embedBatch(texts: List<String>): List<FloatArray> =
+        withContext(Dispatchers.IO) {
+            if (apiKey.isBlank()) {
+                throw IllegalStateException("OpenAI API key not set for embedding")
+            }
+            if (texts.isEmpty()) return@withContext emptyList()
 
-        val inputArray = JSONArray()
-        texts.forEach { inputArray.put(it) }
+            val inputArray = JSONArray()
+            texts.forEach { inputArray.put(it) }
 
-        val requestBody = JSONObject().apply {
-            put("input", inputArray)
-            put("model", MODEL)
-        }
-
-        val connection = URL(OPENAI_EMBEDDING_URL).openConnection() as HttpURLConnection
-        try {
-            connection.requestMethod = "POST"
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.setRequestProperty("Authorization", "Bearer $apiKey")
-            connection.doOutput = true
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 60_000
-
-            OutputStreamWriter(connection.outputStream).use { writer ->
-                writer.write(requestBody.toString())
+            val requestBody = JSONObject().apply {
+                put("input", inputArray)
+                put("model", MODEL)
+                put("dimensions", EMBEDDING_DIMENSION)
             }
 
-            val responseCode = connection.responseCode
-            if (responseCode != 200) {
-                val errorBody = connection.errorStream?.bufferedReader()?.readText() ?: ""
-                throw RuntimeException(
-                    "OpenAI embedding batch API returned $responseCode: $errorBody"
-                )
+            val request = Request.Builder()
+                .url(OPENAI_EMBEDDING_URL)
+                .addHeader("Authorization", "Bearer $apiKey")
+                .addHeader("Content-Type", "application/json")
+                .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            val response = client.newCall(request).execute()
+            response.use { resp ->
+                if (!resp.isSuccessful) {
+                    val errorBody = resp.body?.string() ?: ""
+                    throw RuntimeException(
+                        "OpenAI embedding batch API returned ${resp.code}: $errorBody"
+                    )
+                }
+
+                val json = JSONObject(resp.body!!.string())
+                val dataArray = json.getJSONArray("data")
+
+                val results = mutableListOf<FloatArray>()
+                for (i in 0 until dataArray.length()) {
+                    val embeddingArray = dataArray.getJSONObject(i).getJSONArray("embedding")
+                    results.add(jsonArrayToFloatArray(embeddingArray))
+                }
+
+                Log.i(TAG, "Batch embedded ${texts.size} texts")
+                results
             }
-
-            val responseBody = connection.inputStream.bufferedReader().readText()
-            val json = JSONObject(responseBody)
-            val dataArray = json.getJSONArray("data")
-
-            val results = mutableListOf<FloatArray>()
-            for (i in 0 until dataArray.length()) {
-                val embeddingArray = dataArray.getJSONObject(i).getJSONArray("embedding")
-                results.add(jsonArrayToFloatArray(embeddingArray))
-            }
-
-            Log.i(TAG, "Batch embedded ${texts.size} texts")
-            return results
-        } finally {
-            connection.disconnect()
         }
-    }
 
     private fun jsonArrayToFloatArray(arr: JSONArray): FloatArray {
         val result = FloatArray(arr.length())
@@ -821,7 +1349,7 @@ class CloudEmbeddingProvider : EmbeddingProvider {
 
 - [ ] **Step 3: Create LocalEmbeddingProvider.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/memory/LocalEmbeddingProvider.kt`:
+Create `app/src/main/java/org/dollos/ai/memory/LocalEmbeddingProvider.kt`:
 
 ```kotlin
 package org.dollos.ai.memory
@@ -869,446 +1397,24 @@ class LocalEmbeddingProvider : EmbeddingProvider {
 
 ```bash
 cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add src/org/dollos/ai/memory/EmbeddingProvider.kt
-git add src/org/dollos/ai/memory/CloudEmbeddingProvider.kt
-git add src/org/dollos/ai/memory/LocalEmbeddingProvider.kt
-git commit -m "feat: add embedding provider interface with cloud and local implementations"
-```
-
----
-
-## Task 4: ObjectBox Vector Index Wrapper
-
-**Goal:** Implement the ObjectBox vector database wrapper for storing and querying memory embeddings, with a substrate-search capability for hybrid (vector + BM25) search.
-
-**Files:**
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/memory/ObjectBoxIndex.kt`
-
-- [ ] **Step 1: Create ObjectBoxIndex.kt**
-
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/memory/ObjectBoxIndex.kt`:
-
-```kotlin
-package org.dollos.ai.memory
-
-import android.content.Context
-import android.util.Log
-import io.objectbox.Box
-import io.objectbox.BoxStore
-import io.objectbox.annotation.Entity
-import io.objectbox.annotation.HnswIndex
-import io.objectbox.annotation.Id
-import io.objectbox.query.QueryBuilder
-
-/**
- * ObjectBox entity for memory chunks.
- * Each chunk is a section of a Markdown memory file with its embedding vector.
- */
-@Entity
-data class MemoryChunk(
-    @Id var id: Long = 0,
-    /** Relative path to the source Markdown file (e.g., "memory/people/alice.md"). */
-    var filePath: String = "",
-    /** The text content of this chunk. */
-    var content: String = "",
-    /** Last modified timestamp of the source file when this chunk was indexed. */
-    var fileModifiedAt: Long = 0,
-    /** The embedding vector for semantic search. */
-    @HnswIndex(dimensions = 1536)
-    var embedding: FloatArray = FloatArray(0)
-) {
-    // ObjectBox requires a no-arg constructor
-    constructor() : this(0, "", "", 0, FloatArray(0))
-}
-
-/**
- * Wraps ObjectBox for memory vector search.
- *
- * ObjectBox is purely a search index -- Markdown files are the source of truth.
- * If the ObjectBox database is corrupted or missing, it can be fully rebuilt
- * from the Markdown files.
- *
- * Provides hybrid search: vector similarity + BM25 keyword matching,
- * with configurable weights.
- */
-class ObjectBoxIndex(
-    private val context: Context,
-    private val embeddingProvider: EmbeddingProvider
-) {
-    companion object {
-        private const val TAG = "ObjectBoxIndex"
-        private const val DEFAULT_VECTOR_WEIGHT = 0.7f
-        private const val DEFAULT_BM25_WEIGHT = 0.3f
-        private const val MAX_RESULTS = 10
-    }
-
-    private var boxStore: BoxStore? = null
-    private var chunkBox: Box<MemoryChunk>? = null
-    private var available = false
-
-    var vectorWeight: Float = DEFAULT_VECTOR_WEIGHT
-    var bm25Weight: Float = DEFAULT_BM25_WEIGHT
-
-    /**
-     * Initialize ObjectBox. Call on service startup.
-     * If initialization fails, the index is unavailable and search
-     * falls back to substring matching in MemorySearchEngine.
-     */
-    fun init() {
-        try {
-            boxStore = MyObjectBox.builder()
-                .androidContext(context)
-                .name("dollos-memory-index")
-                .build()
-            chunkBox = boxStore?.boxFor(MemoryChunk::class.java)
-            available = true
-            Log.i(TAG, "ObjectBox initialized successfully")
-        } catch (e: Exception) {
-            Log.e(TAG, "ObjectBox initialization failed, search will use fallback", e)
-            available = false
-        }
-    }
-
-    /**
-     * Whether ObjectBox is available for search.
-     */
-    fun isAvailable(): Boolean = available
-
-    /**
-     * Index a memory file. Splits content into chunks and stores with embeddings.
-     * Replaces any existing chunks for the same file path.
-     */
-    suspend fun indexFile(filePath: String, content: String, fileModifiedAt: Long) {
-        val box = chunkBox ?: run {
-            Log.w(TAG, "ObjectBox not available, skipping index for $filePath")
-            return
-        }
-
-        // Remove old chunks for this file
-        removeFile(filePath)
-
-        // Split content into chunks (by section headers or paragraphs)
-        val chunks = splitIntoChunks(content)
-        if (chunks.isEmpty()) return
-
-        // Generate embeddings
-        val embeddings = try {
-            embeddingProvider.embedBatch(chunks)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to generate embeddings for $filePath", e)
-            // Store chunks without embeddings -- BM25 search still works
-            chunks.map { FloatArray(embeddingProvider.dimension) }
-        }
-
-        // Store chunks
-        val entities = chunks.mapIndexed { i, chunkText ->
-            MemoryChunk(
-                filePath = filePath,
-                content = chunkText,
-                fileModifiedAt = fileModifiedAt,
-                embedding = embeddings[i]
-            )
-        }
-        box.put(entities)
-        Log.i(TAG, "Indexed $filePath: ${entities.size} chunks")
-    }
-
-    /**
-     * Remove all chunks for a file path.
-     */
-    fun removeFile(filePath: String) {
-        val box = chunkBox ?: return
-        val existing = box.query()
-            .equal(MemoryChunk_.filePath, filePath)
-            .build()
-            .find()
-        if (existing.isNotEmpty()) {
-            box.remove(existing)
-            Log.d(TAG, "Removed ${existing.size} old chunks for $filePath")
-        }
-    }
-
-    /**
-     * Hybrid search: combines vector similarity and BM25 keyword matching.
-     * Returns up to [maxResults] chunks sorted by combined score.
-     */
-    suspend fun search(query: String, maxResults: Int = MAX_RESULTS): List<SearchResult> {
-        val box = chunkBox ?: return emptyList()
-
-        // Vector search
-        val vectorResults = vectorSearch(query, maxResults * 2)
-
-        // BM25 keyword search
-        val bm25Results = bm25Search(query, maxResults * 2)
-
-        // Merge results with configurable weights
-        return mergeResults(vectorResults, bm25Results, maxResults)
-    }
-
-    /**
-     * Vector similarity search using ObjectBox HNSW index.
-     */
-    private suspend fun vectorSearch(query: String, maxResults: Int): List<ScoredChunk> {
-        val box = chunkBox ?: return emptyList()
-
-        val queryEmbedding = try {
-            embeddingProvider.embed(query)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to embed query for vector search", e)
-            return emptyList()
-        }
-
-        // Check if the embedding is all zeros (placeholder provider)
-        val isZeroVector = queryEmbedding.all { it == 0f }
-        if (isZeroVector) {
-            Log.d(TAG, "Skipping vector search -- zero embedding (placeholder provider)")
-            return emptyList()
-        }
-
-        return try {
-            val results = box.query()
-                .nearestNeighbors(MemoryChunk_.embedding, queryEmbedding, maxResults)
-                .build()
-                .findWithScores()
-
-            results.map { scoredResult ->
-                ScoredChunk(
-                    chunk = scoredResult.get(),
-                    score = 1.0f / (1.0f + scoredResult.score.toFloat()) // Convert distance to similarity
-                )
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Vector search failed", e)
-            emptyList()
-        }
-    }
-
-    /**
-     * BM25-style keyword search.
-     * ObjectBox does not have built-in BM25, so we use a simple term-frequency approach:
-     *   score = (number of query terms found in chunk) / (total query terms)
-     */
-    private fun bm25Search(query: String, maxResults: Int): List<ScoredChunk> {
-        val box = chunkBox ?: return emptyList()
-
-        val queryTerms = query.lowercase().split(Regex("\\s+")).filter { it.length > 2 }
-        if (queryTerms.isEmpty()) return emptyList()
-
-        val allChunks = box.all
-        val scored = allChunks.mapNotNull { chunk ->
-            val contentLower = chunk.content.lowercase()
-            val matchCount = queryTerms.count { term -> contentLower.contains(term) }
-            if (matchCount > 0) {
-                ScoredChunk(chunk, matchCount.toFloat() / queryTerms.size.toFloat())
-            } else {
-                null
-            }
-        }.sortedByDescending { it.score }
-
-        return scored.take(maxResults)
-    }
-
-    /**
-     * Merge vector and BM25 results using configurable weights.
-     * Uses reciprocal rank fusion for combining ranked lists.
-     */
-    private fun mergeResults(
-        vectorResults: List<ScoredChunk>,
-        bm25Results: List<ScoredChunk>,
-        maxResults: Int
-    ): List<SearchResult> {
-        val scoreMap = mutableMapOf<Long, MergedScore>()
-
-        // Add vector scores
-        vectorResults.forEachIndexed { rank, scored ->
-            val id = scored.chunk.id
-            val existing = scoreMap.getOrPut(id) { MergedScore(scored.chunk) }
-            existing.vectorScore = scored.score
-            existing.vectorRank = rank
-        }
-
-        // Add BM25 scores
-        bm25Results.forEachIndexed { rank, scored ->
-            val id = scored.chunk.id
-            val existing = scoreMap.getOrPut(id) { MergedScore(scored.chunk) }
-            existing.bm25Score = scored.score
-            existing.bm25Rank = rank
-        }
-
-        // Compute combined score using reciprocal rank fusion
-        val k = 60 // RRF constant
-        return scoreMap.values
-            .map { merged ->
-                val vectorRRF = if (merged.vectorRank >= 0) {
-                    vectorWeight / (k + merged.vectorRank)
-                } else 0f
-                val bm25RRF = if (merged.bm25Rank >= 0) {
-                    bm25Weight / (k + merged.bm25Rank)
-                } else 0f
-
-                SearchResult(
-                    filePath = merged.chunk.filePath,
-                    content = merged.chunk.content,
-                    score = vectorRRF + bm25RRF,
-                    vectorScore = merged.vectorScore,
-                    bm25Score = merged.bm25Score
-                )
-            }
-            .sortedByDescending { it.score }
-            .take(maxResults)
-    }
-
-    /**
-     * Rebuild the entire index from Markdown files.
-     * Call this when the index is corrupted or on first run.
-     */
-    suspend fun rebuildFromFiles(store: MarkdownMemoryStore) {
-        val box = chunkBox ?: run {
-            Log.w(TAG, "ObjectBox not available, cannot rebuild index")
-            return
-        }
-
-        Log.i(TAG, "Rebuilding index from Markdown files...")
-        box.removeAll()
-
-        val files = store.listAllMemoryFiles()
-        var totalChunks = 0
-        for ((relativePath, file) in files) {
-            try {
-                val content = file.readText()
-                if (content.isNotBlank()) {
-                    indexFile(relativePath, content, file.lastModified())
-                    totalChunks++
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to index $relativePath during rebuild", e)
-            }
-        }
-        Log.i(TAG, "Index rebuild complete: $totalChunks files indexed")
-    }
-
-    /**
-     * Check if the index is consistent with the Markdown files.
-     * Returns true if all files are indexed and up to date.
-     */
-    fun isConsistentWith(store: MarkdownMemoryStore): Boolean {
-        val box = chunkBox ?: return false
-
-        val files = store.listAllMemoryFiles()
-        for ((relativePath, file) in files) {
-            val chunks = box.query()
-                .equal(MemoryChunk_.filePath, relativePath)
-                .build()
-                .find()
-
-            if (chunks.isEmpty()) {
-                Log.d(TAG, "Index missing file: $relativePath")
-                return false
-            }
-
-            // Check if file was modified after indexing
-            val indexedAt = chunks.first().fileModifiedAt
-            if (file.lastModified() > indexedAt) {
-                Log.d(TAG, "Index stale for file: $relativePath")
-                return false
-            }
-        }
-
-        return true
-    }
-
-    /**
-     * Close the ObjectBox store. Call on service shutdown.
-     */
-    fun close() {
-        boxStore?.close()
-        boxStore = null
-        chunkBox = null
-        available = false
-        Log.i(TAG, "ObjectBox closed")
-    }
-
-    // -- Helpers --
-
-    /**
-     * Split Markdown content into chunks by section headers (##) or double newlines.
-     * Each chunk is a meaningful unit for embedding and search.
-     */
-    private fun splitIntoChunks(content: String): List<String> {
-        if (content.isBlank()) return emptyList()
-
-        // Split by ## headers first
-        val sections = content.split(Regex("(?=^## )", RegexOption.MULTILINE))
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-
-        // If no sections found, split by double newlines
-        if (sections.size <= 1) {
-            val paragraphs = content.split(Regex("\n\n+"))
-                .map { it.trim() }
-                .filter { it.isNotBlank() && it.length > 20 }
-            if (paragraphs.isNotEmpty()) return paragraphs
-        }
-
-        return sections
-    }
-
-    // -- Internal data classes --
-
-    private data class ScoredChunk(val chunk: MemoryChunk, val score: Float)
-
-    private data class MergedScore(
-        val chunk: MemoryChunk,
-        var vectorScore: Float = 0f,
-        var bm25Score: Float = 0f,
-        var vectorRank: Int = -1,
-        var bm25Rank: Int = -1
-    )
-}
-
-/**
- * A search result from hybrid search.
- */
-data class SearchResult(
-    val filePath: String,
-    val content: String,
-    val score: Float,
-    val vectorScore: Float = 0f,
-    val bm25Score: Float = 0f
-)
-```
-
-- [ ] **Step 2: Note on ObjectBox code generation**
-
-ObjectBox uses an annotation processor to generate `MyObjectBox` and `MemoryChunk_` classes at compile time. The `@Entity` and `@HnswIndex` annotations on `MemoryChunk` trigger this generation.
-
-For the AOSP build system, ObjectBox's annotation processor (`objectbox-processor`) must be configured. If ObjectBox annotation processing is not available in the AOSP Soong build, a workaround is to:
-1. Pre-generate the ObjectBox model files from a Gradle-based project
-2. Include the generated `MyObjectBox.java` and property classes as source files
-3. OR use ObjectBox without annotations (manual BoxStore setup with `ModelBuilder`)
-
-This will be resolved during Task 8 (build integration). For now, the code references `MyObjectBox` and `MemoryChunk_` as if they are generated.
-
-- [ ] **Step 3: Commit**
-
-```bash
-cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add src/org/dollos/ai/memory/ObjectBoxIndex.kt
-git commit -m "feat: add ObjectBox vector index wrapper with hybrid search"
+git add app/src/main/java/org/dollos/ai/memory/EmbeddingProvider.kt
+git add app/src/main/java/org/dollos/ai/memory/CloudEmbeddingProvider.kt
+git add app/src/main/java/org/dollos/ai/memory/LocalEmbeddingProvider.kt
+git commit -m "feat: add embedding provider interface with cloud (OkHttp) and local implementations"
 ```
 
 ---
 
 ## Task 5: Memory Search Engine (Hybrid Search with Fallback)
 
-**Goal:** Implement the top-level search engine that uses ObjectBox for hybrid search when available, falling back to simple substring search when ObjectBox is unavailable.
+**Goal:** Implement the top-level search engine that uses sqlite-vec for vector search and FTS5 for BM25, with configurable weights and a fallback to FTS5-only when vec0 is unavailable.
 
 **Files:**
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/memory/MemorySearchEngine.kt`
+- Create: `app/src/main/java/org/dollos/ai/memory/MemorySearchEngine.kt`
 
 - [ ] **Step 1: Create MemorySearchEngine.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/memory/MemorySearchEngine.kt`:
+Create `app/src/main/java/org/dollos/ai/memory/MemorySearchEngine.kt`:
 
 ```kotlin
 package org.dollos.ai.memory
@@ -1316,23 +1422,32 @@ package org.dollos.ai.memory
 import android.util.Log
 
 /**
- * Top-level memory search engine.
+ * Hybrid memory search engine.
  *
- * Uses ObjectBox hybrid search (vector + BM25) when available.
- * Falls back to simple substring matching across all Markdown files
- * when ObjectBox is unavailable (init failed, not yet ready, etc.).
+ * Combines two search strategies:
+ *   1. Vector search via sqlite-vec (cosine similarity via vec0)
+ *   2. Keyword search via FTS5 (BM25 scoring)
+ *
+ * Results are merged using reciprocal rank fusion (RRF) with configurable weights.
+ * Falls back to FTS5-only if vec0 is not available.
+ * Falls back to simple substring matching if both are unavailable.
  *
  * Markdown files are always the source of truth.
  */
 class MemorySearchEngine(
-    private val store: MarkdownMemoryStore,
-    private val objectBoxIndex: ObjectBoxIndex?
+    private val store: MarkdownStore,
+    private val database: MemoryDatabase,
+    private val embeddingProvider: EmbeddingProvider
 ) {
     companion object {
         private const val TAG = "MemorySearchEngine"
         private const val MAX_RESULTS = 10
         private const val MIN_QUERY_LENGTH = 2
+        private const val RRF_K = 60 // Reciprocal rank fusion constant
     }
+
+    var vectorWeight: Float = 0.7f
+    var bm25Weight: Float = 0.3f
 
     /**
      * Search memory for content relevant to the query.
@@ -1344,24 +1459,102 @@ class MemorySearchEngine(
             return emptyList()
         }
 
-        // Try ObjectBox hybrid search first
-        if (objectBoxIndex != null && objectBoxIndex.isAvailable()) {
-            try {
-                val results = objectBoxIndex.search(query, maxResults)
-                Log.i(TAG, "ObjectBox search returned ${results.size} results for: $query")
-                return results
-            } catch (e: Exception) {
-                Log.e(TAG, "ObjectBox search failed, falling back to substring search", e)
-            }
+        // BM25 keyword search via FTS5 (always available)
+        val bm25Results = try {
+            database.fts5Search(query, maxResults * 2)
+        } catch (e: Exception) {
+            Log.e(TAG, "FTS5 search failed", e)
+            emptyList()
         }
 
-        // Fallback: simple substring search across all Markdown files
-        return substringSearch(query, maxResults)
+        // Vector search via sqlite-vec (only if vec0 is available)
+        val vectorResults = if (database.isVec0Available()) {
+            try {
+                val queryEmbedding = embeddingProvider.embed(query)
+                // Skip vector search if embedding is all zeros (placeholder provider)
+                val isZeroVector = queryEmbedding.all { it == 0f }
+                if (isZeroVector) {
+                    Log.d(TAG, "Skipping vector search -- zero embedding (placeholder provider)")
+                    emptyList()
+                } else {
+                    database.vectorSearch(queryEmbedding, maxResults * 2)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Vector search failed", e)
+                emptyList()
+            }
+        } else {
+            emptyList()
+        }
+
+        // If both searches returned nothing, fall back to substring search
+        if (vectorResults.isEmpty() && bm25Results.isEmpty()) {
+            Log.d(TAG, "No results from vec0 or FTS5, falling back to substring search")
+            return substringSearch(query, maxResults)
+        }
+
+        // Merge results using reciprocal rank fusion
+        val merged = mergeResults(vectorResults, bm25Results, maxResults)
+        Log.i(TAG, "Hybrid search returned ${merged.size} results for: $query " +
+            "(vec0=${vectorResults.size}, fts5=${bm25Results.size})")
+        return merged
+    }
+
+    /**
+     * Merge vector and BM25 results using reciprocal rank fusion.
+     */
+    private fun mergeResults(
+        vectorResults: List<Pair<Long, Float>>,
+        bm25Results: List<Pair<Long, Float>>,
+        maxResults: Int
+    ): List<SearchResult> {
+        val scoreMap = mutableMapOf<Long, MergedScore>()
+
+        // Add vector scores
+        vectorResults.forEachIndexed { rank, (rowId, distance) ->
+            val existing = scoreMap.getOrPut(rowId) { MergedScore(rowId) }
+            // Convert distance to similarity: 1 / (1 + distance)
+            existing.vectorScore = 1.0f / (1.0f + distance)
+            existing.vectorRank = rank
+        }
+
+        // Add BM25 scores
+        bm25Results.forEachIndexed { rank, (rowId, bm25Score) ->
+            val existing = scoreMap.getOrPut(rowId) { MergedScore(rowId) }
+            existing.bm25Score = bm25Score
+            existing.bm25Rank = rank
+        }
+
+        // Compute combined RRF score and resolve chunk metadata
+        val allRowIds = scoreMap.keys.toList()
+        val chunkMap = database.getChunks(allRowIds)
+
+        return scoreMap.values
+            .mapNotNull { merged ->
+                val chunk = chunkMap[merged.rowId] ?: return@mapNotNull null
+
+                val vectorRRF = if (merged.vectorRank >= 0) {
+                    vectorWeight / (RRF_K + merged.vectorRank)
+                } else 0f
+                val bm25RRF = if (merged.bm25Rank >= 0) {
+                    bm25Weight / (RRF_K + merged.bm25Rank)
+                } else 0f
+
+                SearchResult(
+                    filePath = chunk.filePath,
+                    content = chunk.chunkText,
+                    score = vectorRRF + bm25RRF,
+                    vectorScore = merged.vectorScore,
+                    bm25Score = merged.bm25Score
+                )
+            }
+            .sortedByDescending { it.score }
+            .take(maxResults)
     }
 
     /**
      * Simple substring search across all Markdown memory files.
-     * Scores by number of query term occurrences in each file section.
+     * Used as a last-resort fallback when both vec0 and FTS5 return no results.
      */
     private fun substringSearch(query: String, maxResults: Int): List<SearchResult> {
         val queryTerms = query.lowercase().split(Regex("\\s+")).filter { it.length > MIN_QUERY_LENGTH }
@@ -1421,34 +1614,56 @@ class MemorySearchEngine(
 
         return sections
     }
+
+    // -- Internal data classes --
+
+    private data class MergedScore(
+        val rowId: Long,
+        var vectorScore: Float = 0f,
+        var bm25Score: Float = 0f,
+        var vectorRank: Int = -1,
+        var bm25Rank: Int = -1
+    )
 }
+
+/**
+ * A search result from hybrid search.
+ */
+data class SearchResult(
+    val filePath: String,
+    val content: String,
+    val score: Float,
+    val vectorScore: Float = 0f,
+    val bm25Score: Float = 0f
+)
 ```
 
 - [ ] **Step 2: Commit**
 
 ```bash
 cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add src/org/dollos/ai/memory/MemorySearchEngine.kt
-git commit -m "feat: add memory search engine with ObjectBox hybrid and substring fallback"
+git add app/src/main/java/org/dollos/ai/memory/MemorySearchEngine.kt
+git commit -m "feat: add hybrid memory search engine with vec0 + FTS5 and substring fallback"
 ```
 
 ---
 
 ## Task 6: Memory Manager (Orchestrator with Write Triggers)
 
-**Goal:** Implement the main memory orchestrator that ties together all memory components, handles write triggers (context threshold, idle, event-based), and manages the "remember this" flow.
+**Goal:** Implement the main memory orchestrator that ties together all memory components, handles write triggers (context threshold, idle, event-based), manages index sync, and manages the "remember this" flow.
 
 **Files:**
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/memory/MemoryManager.kt`
+- Create: `app/src/main/java/org/dollos/ai/memory/MemoryManager.kt`
 
 - [ ] **Step 1: Create MemoryManager.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/memory/MemoryManager.kt`:
+Create `app/src/main/java/org/dollos/ai/memory/MemoryManager.kt`:
 
 ```kotlin
 package org.dollos.ai.memory
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -1463,7 +1678,7 @@ import java.time.LocalDate
  * Main memory orchestrator.
  *
  * Manages three-tier memory, coordinates write triggers, handles "remember this" flow,
- * and keeps the ObjectBox index in sync with Markdown files.
+ * and keeps the SQLite index (vec0 + FTS5) in sync with Markdown files.
  *
  * Write triggers (all feed into a single serialized write queue):
  *   1. Context threshold -- extract facts when context reaches 70-80% capacity
@@ -1471,21 +1686,25 @@ import java.time.LocalDate
  *   3. Event-based -- screen lock, app switch, "remember this"
  */
 class MemoryManager(
-    private val context: Context,
-    private val embeddingSource: String = "cloud" // "cloud" or "local"
+    private val context: Context
 ) {
     companion object {
         private const val TAG = "MemoryManager"
         private const val IDLE_TRIGGER_DELAY_MS = 5L * 60 * 1000 // 5 minutes
+        private const val PREFS_NAME = "memory_config"
+        private const val KEY_EMBEDDING_SOURCE = "embedding_source"
     }
 
+    private val prefs: SharedPreferences =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
     private val rootDir = File(context.filesDir, "memory")
-    val store = MarkdownMemoryStore(rootDir)
-    private val embeddingProvider: EmbeddingProvider = createEmbeddingProvider(embeddingSource)
-    val objectBoxIndex = ObjectBoxIndex(context, embeddingProvider)
-    val searchEngine = MemorySearchEngine(store, objectBoxIndex)
+    val store = MarkdownStore(rootDir)
+    private val embeddingProvider: EmbeddingProvider = createEmbeddingProvider()
+    val database = MemoryDatabase(context, embeddingProvider.dimension)
+    val searchEngine = MemorySearchEngine(store, database, embeddingProvider)
     val writeQueue = MemoryWriteQueue(store, rootDir) { op ->
-        // After each successful write, update the ObjectBox index
+        // After each successful write, update the SQLite index
         onWriteComplete(op)
     }
 
@@ -1511,16 +1730,14 @@ class MemoryManager(
         // Start the write queue
         writeQueue.start()
 
-        // Initialize ObjectBox index
-        objectBoxIndex.init()
+        // Initialize SQLite database and load sqlite-vec extension
+        database.initialize()
 
         // Check index consistency and rebuild if needed
-        if (objectBoxIndex.isAvailable()) {
-            scope.launch {
-                if (!objectBoxIndex.isConsistentWith(store)) {
-                    Log.i(TAG, "ObjectBox index inconsistent, rebuilding...")
-                    objectBoxIndex.rebuildFromFiles(store)
-                }
+        scope.launch {
+            if (!isIndexConsistent()) {
+                Log.i(TAG, "SQLite index inconsistent, rebuilding...")
+                rebuildIndex()
             }
         }
 
@@ -1539,7 +1756,7 @@ class MemoryManager(
     fun shutdown() {
         idleJob?.cancel()
         writeQueue.stop()
-        objectBoxIndex.close()
+        database.close()
         Log.i(TAG, "Memory system shut down")
     }
 
@@ -1715,11 +1932,9 @@ class MemoryManager(
     // -- Index sync --
 
     /**
-     * Called after a successful memory write to update the ObjectBox index.
+     * Called after a successful memory write to update the SQLite index.
      */
     private fun onWriteComplete(op: MemoryWriteQueue.MemoryWriteOp) {
-        if (!objectBoxIndex.isAvailable()) return
-
         scope.launch {
             try {
                 val relativePath = when (op.type) {
@@ -1733,12 +1948,63 @@ class MemoryManager(
                 val match = allFiles.find { it.first == relativePath }
                 if (match != null) {
                     val content = match.second.readText()
-                    objectBoxIndex.indexFile(relativePath, content, match.second.lastModified())
+                    val chunks = splitIntoChunks(content)
+                    val embeddings = try {
+                        embeddingProvider.embedBatch(chunks)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to generate embeddings for $relativePath", e)
+                        chunks.map { FloatArray(embeddingProvider.dimension) }
+                    }
+                    database.indexFile(relativePath, chunks, embeddings, match.second.lastModified())
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to update index after write op ${op.id}", e)
             }
         }
+    }
+
+    /**
+     * Rebuild the entire index from Markdown files.
+     */
+    suspend fun rebuildIndex() {
+        Log.i(TAG, "Rebuilding index from Markdown files...")
+        database.removeAll()
+
+        val files = store.listAllMemoryFiles()
+        var totalChunks = 0
+        for ((relativePath, file) in files) {
+            try {
+                val content = file.readText()
+                if (content.isNotBlank()) {
+                    val chunks = splitIntoChunks(content)
+                    val embeddings = try {
+                        embeddingProvider.embedBatch(chunks)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to generate embeddings for $relativePath", e)
+                        chunks.map { FloatArray(embeddingProvider.dimension) }
+                    }
+                    database.indexFile(relativePath, chunks, embeddings, file.lastModified())
+                    totalChunks += chunks.size
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to index $relativePath during rebuild", e)
+            }
+        }
+        Log.i(TAG, "Index rebuild complete: ${files.size} files, $totalChunks chunks")
+    }
+
+    /**
+     * Check if the index is consistent with the Markdown files.
+     */
+    private fun isIndexConsistent(): Boolean {
+        val files = store.listAllMemoryFiles()
+        for ((relativePath, file) in files) {
+            if (!database.isFileIndexed(relativePath, file.lastModified())) {
+                Log.d(TAG, "Index missing or stale for file: $relativePath")
+                return false
+            }
+        }
+        return true
     }
 
     // -- Embedding source management --
@@ -1749,15 +2015,20 @@ class MemoryManager(
      */
     fun setEmbeddingSource(source: String) {
         Log.i(TAG, "Switching embedding source to: $source")
-        // Note: In a real implementation, this would recreate the embeddingProvider
-        // and rebuild the ObjectBox index. For now, the provider is set at init time.
-        // Changing it requires restarting the memory system.
+        prefs.edit().putString(KEY_EMBEDDING_SOURCE, source).apply()
+        // Changing the embedding provider requires restarting the memory system
+        // because the vec0 table dimension is fixed at creation time.
         Log.w(TAG, "Embedding source change requires service restart to take effect")
+    }
+
+    fun getEmbeddingSource(): String {
+        return prefs.getString(KEY_EMBEDDING_SOURCE, "cloud") ?: "cloud"
     }
 
     // -- Helpers --
 
-    private fun createEmbeddingProvider(source: String): EmbeddingProvider {
+    private fun createEmbeddingProvider(): EmbeddingProvider {
+        val source = prefs.getString(KEY_EMBEDDING_SOURCE, "cloud") ?: "cloud"
         return when (source) {
             "cloud" -> CloudEmbeddingProvider()
             "local" -> LocalEmbeddingProvider()
@@ -1766,6 +2037,29 @@ class MemoryManager(
                 LocalEmbeddingProvider()
             }
         }
+    }
+
+    /**
+     * Split Markdown content into chunks by section headers (##) or double newlines.
+     * Each chunk is a meaningful unit for embedding and search.
+     */
+    private fun splitIntoChunks(content: String): List<String> {
+        if (content.isBlank()) return emptyList()
+
+        // Split by ## headers first
+        val sections = content.split(Regex("(?=^## )", RegexOption.MULTILINE))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+        // If no sections found, split by double newlines
+        if (sections.size <= 1) {
+            val paragraphs = content.split(Regex("\n\n+"))
+                .map { it.trim() }
+                .filter { it.isNotBlank() && it.length > 20 }
+            if (paragraphs.isNotEmpty()) return paragraphs
+        }
+
+        return sections
     }
 }
 
@@ -1784,29 +2078,27 @@ data class ExtractedMemory(
 
 ```bash
 cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add src/org/dollos/ai/memory/MemoryManager.kt
-git commit -m "feat: add MemoryManager orchestrator with three write triggers and remember-this flow"
+git add app/src/main/java/org/dollos/ai/memory/MemoryManager.kt
+git commit -m "feat: add MemoryManager orchestrator with three write triggers and index sync"
 ```
 
 ---
 
 ## Task 7: Conversation Segment and Message Store
 
-**Goal:** Implement date-segmented conversation storage and the persistent message store.
+**Goal:** Implement date-segmented conversation storage and the persistent message store using SQLite.
 
 **Files:**
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/conversation/ConversationSegment.kt`
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/conversation/MessageStore.kt`
+- Create: `app/src/main/java/org/dollos/ai/conversation/ConversationSegment.kt`
+- Create: `app/src/main/java/org/dollos/ai/conversation/MessageStore.kt`
 
 - [ ] **Step 1: Create ConversationSegment.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/conversation/ConversationSegment.kt`:
+Create `app/src/main/java/org/dollos/ai/conversation/ConversationSegment.kt`:
 
 ```kotlin
 package org.dollos.ai.conversation
 
-import org.json.JSONArray
-import org.json.JSONObject
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -1823,28 +2115,6 @@ data class Message(
 ) {
     enum class Role {
         USER, ASSISTANT, SYSTEM
-    }
-
-    fun toJson(): JSONObject {
-        return JSONObject().apply {
-            put("id", id)
-            put("role", role.name)
-            put("content", content)
-            put("timestamp", timestamp)
-            put("tokenCount", tokenCount)
-        }
-    }
-
-    companion object {
-        fun fromJson(json: JSONObject): Message {
-            return Message(
-                id = json.getString("id"),
-                role = Role.valueOf(json.getString("role")),
-                content = json.getString("content"),
-                timestamp = json.getLong("timestamp"),
-                tokenCount = json.optInt("tokenCount", 0)
-            )
-        }
     }
 }
 
@@ -1877,28 +2147,7 @@ data class ConversationSegment(
      */
     fun dateString(): String = date.toString()
 
-    fun toJson(): JSONObject {
-        return JSONObject().apply {
-            put("date", date.toString())
-            put("summary", summary ?: JSONObject.NULL)
-            val msgArray = JSONArray()
-            messages.forEach { msgArray.put(it.toJson()) }
-            put("messages", msgArray)
-        }
-    }
-
     companion object {
-        fun fromJson(json: JSONObject): ConversationSegment {
-            val date = LocalDate.parse(json.getString("date"))
-            val summary = if (json.isNull("summary")) null else json.getString("summary")
-            val msgArray = json.getJSONArray("messages")
-            val messages = mutableListOf<Message>()
-            for (i in 0 until msgArray.length()) {
-                messages.add(Message.fromJson(msgArray.getJSONObject(i)))
-            }
-            return ConversationSegment(date, messages, summary)
-        }
-
         /**
          * Determine the segment date for a given timestamp.
          */
@@ -1913,68 +2162,117 @@ data class ConversationSegment(
 
 - [ ] **Step 2: Create MessageStore.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/conversation/MessageStore.kt`:
+Create `app/src/main/java/org/dollos/ai/conversation/MessageStore.kt`:
 
 ```kotlin
 package org.dollos.ai.conversation
 
+import android.content.ContentValues
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
 import android.util.Log
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
-import java.io.IOException
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
 /**
- * Persists conversation messages to disk as JSON files.
+ * Persists conversation messages to SQLite.
  *
- * Storage layout:
- *   /data/user/0/org.dollos.ai/files/conversations/
- *     2026-03-19.json    -- one file per date segment
- *     2026-03-18.json
- *     ...
+ * Schema:
+ *   messages (id TEXT PK, date TEXT, role TEXT, content TEXT, timestamp INTEGER, token_count INTEGER)
+ *   segment_summaries (date TEXT PK, summary TEXT)
  */
-class MessageStore(private val rootDir: File) {
+class MessageStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
 
     companion object {
         private const val TAG = "MessageStore"
+        private const val DB_NAME = "conversations.db"
+        private const val DB_VERSION = 1
         private val DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd")
     }
 
-    init {
-        rootDir.mkdirs()
+    override fun onCreate(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                date TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                token_count INTEGER NOT NULL DEFAULT 0
+            )
+        """.trimIndent())
+
+        db.execSQL("""
+            CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date)
+        """.trimIndent())
+
+        db.execSQL("""
+            CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)
+        """.trimIndent())
+
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS segment_summaries (
+                date TEXT PRIMARY KEY,
+                summary TEXT NOT NULL
+            )
+        """.trimIndent())
+
+        Log.i(TAG, "Conversations database created")
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        db.execSQL("DROP TABLE IF EXISTS messages")
+        db.execSQL("DROP TABLE IF EXISTS segment_summaries")
+        onCreate(db)
     }
 
     /**
-     * Save a conversation segment to disk.
+     * Append a single message.
      */
-    fun saveSegment(segment: ConversationSegment) {
-        val file = segmentFile(segment.date)
-        try {
-            file.writeText(segment.toJson().toString(2))
-            Log.d(TAG, "Saved segment ${segment.dateString()} (${segment.messages.size} messages)")
-        } catch (e: IOException) {
-            Log.e(TAG, "Failed to save segment ${segment.dateString()}", e)
-            throw e
+    fun appendMessage(message: Message) {
+        val date = ConversationSegment.dateForTimestamp(message.timestamp)
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put("id", message.id)
+            put("date", date.toString())
+            put("role", message.role.name)
+            put("content", message.content)
+            put("timestamp", message.timestamp)
+            put("token_count", message.tokenCount)
         }
+        db.insertWithOnConflict("messages", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+        Log.d(TAG, "Appended message ${message.id} (${message.role})")
     }
 
     /**
-     * Load a conversation segment from disk.
-     * Returns null if the segment file does not exist.
+     * Load a conversation segment by date.
+     * Returns null if no messages exist for that date.
      */
     fun loadSegment(date: LocalDate): ConversationSegment? {
-        val file = segmentFile(date)
-        if (!file.exists()) return null
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT id, role, content, timestamp, token_count FROM messages WHERE date = ? ORDER BY timestamp ASC",
+            arrayOf(date.toString())
+        )
 
-        return try {
-            val json = JSONObject(file.readText())
-            ConversationSegment.fromJson(json)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to load segment $date", e)
-            null
+        val messages = mutableListOf<Message>()
+        cursor.use { c ->
+            while (c.moveToNext()) {
+                messages.add(Message(
+                    id = c.getString(0),
+                    role = Message.Role.valueOf(c.getString(1)),
+                    content = c.getString(2),
+                    timestamp = c.getLong(3),
+                    tokenCount = c.getInt(4)
+                ))
+            }
         }
+
+        if (messages.isEmpty()) return null
+
+        val summary = loadSummary(date)
+        return ConversationSegment(date, messages, summary)
     }
 
     /**
@@ -1986,31 +2284,54 @@ class MessageStore(private val rootDir: File) {
     }
 
     /**
-     * Append a single message to today's segment.
-     * Loads the segment, adds the message, and saves back.
+     * Save a compression summary for a date segment.
      */
-    fun appendMessage(message: Message) {
-        val date = ConversationSegment.dateForTimestamp(message.timestamp)
-        val segment = loadSegment(date) ?: ConversationSegment(date)
-        segment.addMessage(message)
-        saveSegment(segment)
+    fun saveSummary(date: LocalDate, summary: String) {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put("date", date.toString())
+            put("summary", summary)
+        }
+        db.insertWithOnConflict("segment_summaries", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+        Log.d(TAG, "Saved summary for $date")
+    }
+
+    /**
+     * Load a compression summary for a date segment.
+     */
+    fun loadSummary(date: LocalDate): String? {
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT summary FROM segment_summaries WHERE date = ?",
+            arrayOf(date.toString())
+        )
+        return cursor.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        }
     }
 
     /**
      * List all available segment dates, sorted descending (most recent first).
      */
     fun listSegmentDates(): List<LocalDate> {
-        val files = rootDir.listFiles { file ->
-            file.isFile && file.name.endsWith(".json")
-        } ?: return emptyList()
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT DISTINCT date FROM messages ORDER BY date DESC",
+            null
+        )
 
-        return files.mapNotNull { file ->
-            try {
-                LocalDate.parse(file.nameWithoutExtension, DATE_FORMAT)
-            } catch (e: Exception) {
-                null
+        val dates = mutableListOf<LocalDate>()
+        cursor.use { c ->
+            while (c.moveToNext()) {
+                try {
+                    dates.add(LocalDate.parse(c.getString(0)))
+                } catch (e: Exception) {
+                    Log.w(TAG, "Invalid date in database: ${c.getString(0)}")
+                }
             }
-        }.sortedDescending()
+        }
+
+        return dates
     }
 
     /**
@@ -2030,24 +2351,24 @@ class MessageStore(private val rootDir: File) {
     }
 
     /**
-     * Delete a segment file.
+     * Delete all messages for a date segment.
      */
     fun deleteSegment(date: LocalDate): Boolean {
-        val file = segmentFile(date)
-        if (!file.exists()) return false
-        return file.delete()
+        val db = writableDatabase
+        val deleted = db.delete("messages", "date = ?", arrayOf(date.toString()))
+        db.delete("segment_summaries", "date = ?", arrayOf(date.toString()))
+        return deleted > 0
     }
 
     /**
-     * Get the total storage size of all conversation files in bytes.
+     * Get the total number of messages stored.
      */
-    fun totalStorageBytes(): Long {
-        val files = rootDir.listFiles() ?: return 0
-        return files.sumOf { it.length() }
-    }
-
-    private fun segmentFile(date: LocalDate): File {
-        return File(rootDir, "${date.format(DATE_FORMAT)}.json")
+    fun totalMessageCount(): Int {
+        val db = readableDatabase
+        val cursor = db.rawQuery("SELECT COUNT(*) FROM messages", null)
+        return cursor.use { c ->
+            if (c.moveToFirst()) c.getInt(0) else 0
+        }
     }
 }
 ```
@@ -2056,9 +2377,9 @@ class MessageStore(private val rootDir: File) {
 
 ```bash
 cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add src/org/dollos/ai/conversation/ConversationSegment.kt
-git add src/org/dollos/ai/conversation/MessageStore.kt
-git commit -m "feat: add date-segmented conversation storage and message persistence"
+git add app/src/main/java/org/dollos/ai/conversation/ConversationSegment.kt
+git add app/src/main/java/org/dollos/ai/conversation/MessageStore.kt
+git commit -m "feat: add date-segmented conversation storage with SQLite persistence"
 ```
 
 ---
@@ -2068,11 +2389,11 @@ git commit -m "feat: add date-segmented conversation storage and message persist
 **Goal:** Implement proactive context compression that runs asynchronously using the foreground model when context reaches 70-80% capacity.
 
 **Files:**
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/conversation/ContextCompressor.kt`
+- Create: `app/src/main/java/org/dollos/ai/conversation/ContextCompressor.kt`
 
 - [ ] **Step 1: Create ContextCompressor.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/conversation/ContextCompressor.kt`:
+Create `app/src/main/java/org/dollos/ai/conversation/ContextCompressor.kt`:
 
 ```kotlin
 package org.dollos.ai.conversation
@@ -2268,7 +2589,7 @@ data class CompressionResult(
 
 ```bash
 cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add src/org/dollos/ai/conversation/ContextCompressor.kt
+git add app/src/main/java/org/dollos/ai/conversation/ContextCompressor.kt
 git commit -m "feat: add async context compressor with foreground model compression"
 ```
 
@@ -2276,14 +2597,14 @@ git commit -m "feat: add async context compressor with foreground model compress
 
 ## Task 9: Conversation Manager
 
-**Goal:** Implement the top-level conversation manager that ties together message storage, context window management, and compression.
+**Goal:** Implement the top-level conversation manager that ties together message storage, context window management, compression, and memory integration.
 
 **Files:**
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/conversation/ConversationManager.kt`
+- Create: `app/src/main/java/org/dollos/ai/conversation/ConversationManager.kt`
 
 - [ ] **Step 1: Create ConversationManager.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/conversation/ConversationManager.kt`:
+Create `app/src/main/java/org/dollos/ai/conversation/ConversationManager.kt`:
 
 ```kotlin
 package org.dollos.ai.conversation
@@ -2291,8 +2612,6 @@ package org.dollos.ai.conversation
 import android.content.Context
 import android.util.Log
 import org.dollos.ai.memory.MemoryManager
-import org.json.JSONObject
-import java.io.File
 import java.time.Instant
 import java.time.LocalDate
 
@@ -2315,8 +2634,7 @@ class ConversationManager(
         private const val ROUGH_CHARS_PER_TOKEN = 4
     }
 
-    private val conversationsDir = File(context.filesDir, "conversations")
-    val messageStore = MessageStore(conversationsDir)
+    val messageStore = MessageStore(context)
     val compressor = ContextCompressor(contextWindowSize = contextWindowSize)
 
     /** Current active messages in the context window. */
@@ -2460,7 +2778,7 @@ class ConversationManager(
         activeMessages.clear()
         compressionSummary = null
         estimatedTokenCount = 0
-        messageStore.saveSegment(ConversationSegment(LocalDate.now()))
+        messageStore.deleteSegment(LocalDate.now())
         Log.i(TAG, "Cleared today's conversation")
     }
 
@@ -2492,13 +2810,8 @@ class ConversationManager(
             "$previousSummary\n\n---\n\n${result.summary}"
         }
 
-        // Save the updated segment with summary
-        val todaySegment = ConversationSegment(
-            date = LocalDate.now(),
-            messages = activeMessages.toMutableList(),
-            summary = compressionSummary
-        )
-        messageStore.saveSegment(todaySegment)
+        // Save the summary to the database
+        messageStore.saveSummary(LocalDate.now(), compressionSummary!!)
 
         // Write extracted facts to memory
         if (result.extractedFacts.isNotEmpty()) {
@@ -2534,7 +2847,7 @@ class ConversationManager(
 
 ```bash
 cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add src/org/dollos/ai/conversation/ConversationManager.kt
+git add app/src/main/java/org/dollos/ai/conversation/ConversationManager.kt
 git commit -m "feat: add ConversationManager with context window management and compression integration"
 ```
 
@@ -2545,23 +2858,20 @@ git commit -m "feat: add ConversationManager with context window management and 
 **Goal:** Implement memory export and import via ParcelFileDescriptor for Android scoped storage compliance.
 
 **Files:**
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/memory/MemoryExporter.kt`
+- Create: `app/src/main/java/org/dollos/ai/memory/MemoryExporter.kt`
 
 - [ ] **Step 1: Create MemoryExporter.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/memory/MemoryExporter.kt`:
+Create `app/src/main/java/org/dollos/ai/memory/MemoryExporter.kt`:
 
 ```kotlin
 package org.dollos.ai.memory
 
 import android.os.ParcelFileDescriptor
 import android.util.Log
-import java.io.BufferedReader
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -2577,16 +2887,16 @@ import java.util.zip.ZipOutputStream
  * their relative paths preserved.
  *
  * Import: extracts ZIP into the memory root directory, overwriting
- * existing files. Triggers a full ObjectBox index rebuild after import.
+ * existing files. Triggers a full index rebuild after import.
  */
 class MemoryExporter(
     private val rootDir: File,
-    private val store: MarkdownMemoryStore,
-    private val objectBoxIndex: ObjectBoxIndex?
+    private val store: MarkdownStore,
+    private val memoryManager: MemoryManager
 ) {
     companion object {
         private const val TAG = "MemoryExporter"
-        private const val EXPORT_BUFFER_SIZE = 8192
+        private const val BUFFER_SIZE = 8192
     }
 
     /**
@@ -2607,7 +2917,7 @@ class MemoryExporter(
                 zipOut.putNextEntry(entry)
 
                 FileInputStream(file).use { fis ->
-                    val buffer = ByteArray(EXPORT_BUFFER_SIZE)
+                    val buffer = ByteArray(BUFFER_SIZE)
                     var bytesRead: Int
                     while (fis.read(buffer).also { bytesRead = it } != -1) {
                         zipOut.write(buffer, 0, bytesRead)
@@ -2662,7 +2972,7 @@ class MemoryExporter(
                     targetFile.parentFile?.mkdirs()
 
                     FileOutputStream(targetFile).use { fos ->
-                        val buffer = ByteArray(EXPORT_BUFFER_SIZE)
+                        val buffer = ByteArray(BUFFER_SIZE)
                         var bytesRead: Int
                         while (zipIn.read(buffer).also { bytesRead = it } != -1) {
                             fos.write(buffer, 0, bytesRead)
@@ -2679,11 +2989,9 @@ class MemoryExporter(
 
             Log.i(TAG, "Import complete: $fileCount files")
 
-            // Rebuild ObjectBox index from imported Markdown files
-            if (objectBoxIndex != null && objectBoxIndex.isAvailable()) {
-                Log.i(TAG, "Rebuilding index after import...")
-                objectBoxIndex.rebuildFromFiles(store)
-            }
+            // Rebuild SQLite index from imported Markdown files
+            Log.i(TAG, "Rebuilding index after import...")
+            memoryManager.rebuildIndex()
         } catch (e: Exception) {
             Log.e(TAG, "Import failed", e)
             throw e
@@ -2699,169 +3007,103 @@ class MemoryExporter(
 
 ```bash
 cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add src/org/dollos/ai/memory/MemoryExporter.kt
+git add app/src/main/java/org/dollos/ai/memory/MemoryExporter.kt
 git commit -m "feat: add memory export/import via ParcelFileDescriptor with zip slip protection"
 ```
 
 ---
 
-## Task 11: ObjectBox and ONNX Prebuilt Dependencies
+## Task 11: Gradle Dependencies and Build Integration
 
-**Goal:** Add ObjectBox and ONNX Runtime as prebuilt dependencies for the AOSP build system.
+**Goal:** Add sqlite-vec native library and OkHttp dependency to the Gradle project. Verify everything compiles.
 
 **Files:**
-- Create: `prebuilts/dollos/objectbox/Android.bp`
-- Create: `prebuilts/dollos/onnxruntime/Android.bp`
-- Modify: `packages/apps/DollOSAIService/Android.bp`
+- Download: `app/src/main/jniLibs/arm64-v8a/vec0.so`
+- Modify: `app/build.gradle.kts`
 
-- [ ] **Step 1: Create ObjectBox prebuilt Android.bp**
-
-Create `prebuilts/dollos/objectbox/Android.bp`:
-
-```
-// ObjectBox on-device vector database for Android
-// https://objectbox.io/the-on-device-vector-database-for-android-and-java/
-//
-// Download JARs from Maven Central:
-//   io.objectbox:objectbox-android:4.0.3
-//   io.objectbox:objectbox-kotlin:4.0.3
-//   io.objectbox:objectbox-linux-arm64:4.0.3 (native lib)
-
-java_import {
-    name: "objectbox-android",
-    jars: ["objectbox-android-4.0.3.jar"],
-    sdk_version: "current",
-}
-
-java_import {
-    name: "objectbox-kotlin",
-    jars: ["objectbox-kotlin-4.0.3.jar"],
-    sdk_version: "current",
-}
-
-cc_prebuilt_library_shared {
-    name: "libobjectbox-jni",
-    srcs: ["arm64-v8a/libobjectbox-jni.so"],
-    target: {
-        android_arm64: {
-            srcs: ["arm64-v8a/libobjectbox-jni.so"],
-        },
-    },
-    strip: {
-        none: true,
-    },
-    check_elf_files: false,
-}
-```
-
-- [ ] **Step 2: Create ONNX Runtime prebuilt Android.bp**
-
-Create `prebuilts/dollos/onnxruntime/Android.bp`:
-
-```
-// ONNX Runtime for Android (local embedding inference)
-// https://onnxruntime.ai/
-//
-// Download AAR from Maven Central:
-//   com.microsoft.onnxruntime:onnxruntime-android:1.17.0
-//
-// For v1, this is a placeholder -- LocalEmbeddingProvider returns zero vectors.
-// Actual ONNX inference will be implemented in a future plan.
-
-android_library_import {
-    name: "onnxruntime-android",
-    aars: ["onnxruntime-android-1.17.0.aar"],
-    sdk_version: "current",
-}
-```
-
-- [ ] **Step 3: Update DollOSAIService Android.bp**
-
-Add ObjectBox and ONNX Runtime to DollOSAIService's `static_libs` in `packages/apps/DollOSAIService/Android.bp`:
-
-Add to the `static_libs` array:
-
-```
-    // Memory system dependencies
-    "objectbox-android",
-    "objectbox-kotlin",
-    "onnxruntime-android",
-```
-
-Add to `required` array (for native lib):
-
-```
-    "libobjectbox-jni",
-```
-
-- [ ] **Step 4: Note on ObjectBox annotation processor**
-
-ObjectBox uses compile-time annotation processing to generate `MyObjectBox` and entity property classes (`MemoryChunk_`). In AOSP's Soong build system, Java/Kotlin annotation processors are configured differently than Gradle.
-
-If the ObjectBox annotation processor cannot be integrated into Soong:
-1. Create a standalone Gradle project that compiles the ObjectBox entities
-2. Copy the generated `MyObjectBox.java` and `MemoryChunk_.java` into the source tree
-3. Include them as regular source files
-
-The generated files would go in:
-- `packages/apps/DollOSAIService/src/org/dollos/ai/memory/MyObjectBox.java`
-- `packages/apps/DollOSAIService/src/org/dollos/ai/memory/MemoryChunk_.java`
-
-This step must be resolved during the actual build. Document the resolution in the verification log.
-
-- [ ] **Step 5: Download dependency JARs and AARs**
+- [ ] **Step 1: Download sqlite-vec native library**
 
 ```bash
-cd ~/Desktop/DollOS-build
+cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
 
-# ObjectBox
-mkdir -p prebuilts/dollos/objectbox/arm64-v8a
-cd prebuilts/dollos/objectbox
-# Download from Maven Central:
-# wget https://repo1.maven.org/maven2/io/objectbox/objectbox-android/4.0.3/objectbox-android-4.0.3.jar
-# wget https://repo1.maven.org/maven2/io/objectbox/objectbox-kotlin/4.0.3/objectbox-kotlin-4.0.3.jar
-# Native lib from objectbox-linux-arm64 or extracted from the Android AAR
+mkdir -p app/src/main/jniLibs/arm64-v8a
 
-# ONNX Runtime
-mkdir -p prebuilts/dollos/onnxruntime
-cd prebuilts/dollos/onnxruntime
-# wget https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/1.17.0/onnxruntime-android-1.17.0.aar
+# Download from: https://github.com/asg017/sqlite-vec/releases
+# Pick the latest stable release
+# Download: sqlite-vec-<version>-android-aarch64.tar.gz
+# Extract and copy vec0.so:
+# tar xzf sqlite-vec-<version>-android-aarch64.tar.gz
+# cp vec0.so app/src/main/jniLibs/arm64-v8a/vec0.so
+
+ls -la app/src/main/jniLibs/arm64-v8a/vec0.so
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 2: Update app/build.gradle.kts**
+
+Add OkHttp dependency to the existing dependencies block in `app/build.gradle.kts`:
+
+```kotlin
+dependencies {
+    // ... existing dependencies from Plan A ...
+
+    // OkHttp for cloud embedding API calls (CloudEmbeddingProvider)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+}
+```
+
+No special Gradle plugin or annotation processor is needed. sqlite-vec is a native .so loaded at runtime, not a Gradle dependency. FTS5 is built into Android's SQLite.
+
+- [ ] **Step 3: Verify build**
 
 ```bash
-cd ~/Desktop/DollOS-build
-git add prebuilts/dollos/objectbox/Android.bp
-git add prebuilts/dollos/onnxruntime/Android.bp
-git add packages/apps/DollOSAIService/Android.bp
-git commit -m "feat: add ObjectBox and ONNX Runtime prebuilt dependencies"
+cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
+./gradlew assembleDebug
+```
+
+If the build fails, check:
+1. OkHttp dependency resolves (check internet connectivity and Maven Central access)
+2. Kotlin files compile without errors (check import paths match the file structure)
+3. vec0.so is in the correct jniLibs path
+
+- [ ] **Step 4: Commit**
+
+```bash
+cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
+git add app/build.gradle.kts
+git add app/src/main/jniLibs/arm64-v8a/vec0.so
+git commit -m "feat: add sqlite-vec native library and OkHttp dependency for memory system"
 ```
 
 ---
 
 ## Task 12: Build, Flash, and Verify
 
-**Goal:** Verify the memory system and conversation engine compile, integrate correctly with DollOSAIService, and function on device.
+**Goal:** Build the full APK, install/flash it, and verify the memory system and conversation engine function correctly on device.
 
-- [ ] **Step 1: Build**
+- [ ] **Step 1: Build APK**
+
+```bash
+cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
+./gradlew assembleDebug
+```
+
+- [ ] **Step 2: Install or flash**
+
+For standalone testing:
+
+```bash
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+For full system build (if integrating into AOSP image):
 
 ```bash
 cd ~/Desktop/DollOS-build
 source build/envsetup.sh
 lunch dollos_bluejay-cur-userdebug
 m -j$(nproc)
-```
 
-If build fails due to ObjectBox annotation processing, follow the workaround in Task 11 Step 4 (pre-generate entity classes).
-
-If build fails due to missing ObjectBox or ONNX JARs/AARs, download them as described in Task 11 Step 5.
-
-- [ ] **Step 2: Flash**
-
-```bash
 adb reboot bootloader
-# wait 10s
 cd out/target/product/bluejay
 fastboot flashall -w
 ```
@@ -2878,43 +3120,51 @@ adb shell run-as org.dollos.ai cat files/memory/MEMORY.md
 # Expected: initial core memory content
 ```
 
-- [ ] **Step 4: Verify conversation persistence**
+- [ ] **Step 4: Verify SQLite database creation**
+
+```bash
+adb shell run-as org.dollos.ai ls -la databases/
+# Expected: memory_index.db, conversations.db
+
+# Check vec0 extension loading
+adb shell logcat -d | grep "MemoryDatabase"
+# Expected: "sqlite-vec extension loaded successfully" or "sqlite-vec extension not available"
+```
+
+- [ ] **Step 5: Verify conversation persistence**
 
 ```bash
 # After sending a test message via the AI service
-adb shell run-as org.dollos.ai ls -la files/conversations/
-# Expected: YYYY-MM-DD.json for today
+adb shell logcat -d | grep "MessageStore"
+# Expected: "Appended message" logs
 
-adb shell run-as org.dollos.ai cat files/conversations/$(date +%Y-%m-%d).json
-# Expected: JSON with messages array containing the test message
+adb shell logcat -d | grep "ConversationManager"
+# Expected: "Initialized with N messages" log
 ```
 
-- [ ] **Step 5: Verify memory write queue**
+- [ ] **Step 6: Verify memory write queue**
 
 ```bash
-# Check logs for write queue activity
-adb shell logcat -d | grep "MemoryWriteQueue\|MarkdownMemoryStore\|MemoryManager"
+adb shell logcat -d | grep "MemoryWriteQueue\|MarkdownStore\|MemoryManager"
 # Expected: "Write queue started", write operations logged
 ```
 
-- [ ] **Step 6: Verify search fallback (no ObjectBox)**
-
-If ObjectBox initialization fails on first run, the search should still work via substring fallback:
+- [ ] **Step 7: Verify search (FTS5 at minimum)**
 
 ```bash
-adb shell logcat -d | grep "MemorySearchEngine\|ObjectBoxIndex"
-# If ObjectBox init failed: "ObjectBox initialization failed, search will use fallback"
-# Search calls should show: "Substring search returned N results"
+adb shell logcat -d | grep "MemorySearchEngine\|MemoryDatabase"
+# If vec0 loaded: "sqlite-vec extension loaded successfully"
+# Search calls should show hybrid or FTS5-only results
+# If vec0 not available: "Skipping vector search" or "Substring search returned N results"
 ```
 
-- [ ] **Step 7: Verify memory export via AIDL**
+- [ ] **Step 8: Verify memory export via AIDL**
 
 ```bash
-# Test exportMemory via adb (requires a test client or adb shell service call)
 adb shell logcat -d | grep "MemoryExporter"
 ```
 
-- [ ] **Step 8: Commit verification results**
+- [ ] **Step 9: Commit verification results**
 
 Create `docs/verification-plan-b.md` with test results and any issues encountered.
 
@@ -2930,7 +3180,7 @@ git commit -m "docs: add Plan B verification results"
 
 ### Integration with Plan A
 
-Plan B depends on Plan A (DollOSAIService). When integrating:
+Plan B depends on Plan A (DollOSAIService Gradle project). When integrating:
 1. `DollOSAIApp.onCreate()` should create and init `MemoryManager` and `ConversationManager`
 2. `IDollOSAIService.sendMessage()` should use `ConversationManager.addUserMessage()` and pass memory context from `MemoryManager.buildMemoryContext()`
 3. `IDollOSAIService.searchMemory()` should delegate to `MemorySearchEngine.search()`
@@ -2946,13 +3196,23 @@ After Plan C is complete:
 - Background memory operations (idle extraction, index rebuild) will appear as tasks in the AI Task Manager
 - `pauseAll()` should pause the memory write queue and any in-progress compression
 
-### ObjectBox Considerations
+### sqlite-vec Considerations
 
-ObjectBox for Android uses native JNI libraries. On AOSP:
-- The native `.so` must be available at runtime (included via `required` in Android.bp or bundled in the APK)
-- ObjectBox annotation processor generates `MyObjectBox` -- if Soong can't run it, pre-generate from a Gradle project
-- ObjectBox database files are stored in the app's internal storage (no special permissions needed)
-- If ObjectBox fails to initialize, the system degrades gracefully to substring search
+- sqlite-vec is a loadable SQLite extension distributed as a native .so file
+- It provides the `vec0` virtual table type for approximate nearest neighbor search
+- The .so must be in `jniLibs/arm64-v8a/` so Gradle bundles it into the APK's `lib/` directory
+- At runtime, call `SQLiteDatabase.loadExtension("vec0")` to activate it
+- If the extension fails to load (e.g., wrong architecture, missing file), the system degrades gracefully to FTS5-only search
+- No annotation processing, no code generation, no Gradle plugin needed
+- The vec0 table dimension is fixed at creation time (384 for our embedding size)
+
+### Embedding Dimension
+
+All embedding providers use 384 dimensions:
+- CloudEmbeddingProvider: OpenAI text-embedding-3-small with `"dimensions": 384` parameter (dimension shortening)
+- LocalEmbeddingProvider: placeholder returning 384-dimension zero vectors (matching future all-MiniLM-L6-v2)
+
+This ensures the sqlite-vec table can be shared between providers without rebuilding.
 
 ### Token Estimation
 

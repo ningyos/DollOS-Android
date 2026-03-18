@@ -2,79 +2,286 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build DollOSAIService as a new privileged Android system service (normal app uid, platform cert) with AIDL interfaces for AI operations, a multi-model LLM client with streaming support and budget controls, and a 5-field personality system. Update OOBE SetupWizard to bind to DollOSAIService for API key and personality configuration. Integrate with Plan C's DollOSService for agent action execution.
+**Goal:** Build DollOSAIService as a standalone Gradle Android project (compiled externally, imported into AOSP as a prebuilt APK) with AIDL interfaces for AI operations, a multi-model LLM client with OkHttp streaming support and budget controls, and a 5-field personality system. Update OOBE SetupWizard to bind to DollOSAIService for API key and personality configuration. Integrate with Plan C's DollOSService for agent action execution.
 
-**Architecture:** DollOSAIService runs as a separate privileged app (package `org.dollos.ai`) with normal app uid (no `sharedUserId=system`) to avoid storage issues. It communicates with clients via AIDL (`IDollOSAIService`, `IDollOSAICallback`). LLM API calls use `java.net.HttpURLConnection` (guaranteed available in AOSP, no external deps). Config stored in `SharedPreferences` via device-protected storage. Agent actions are delegated to DollOSService via Binder IPC (`executeSystemAction`).
+**Architecture:** DollOSAIService is a standard Android Gradle project living in its own GitHub repo (`ningyos/DollOSAIService`). It uses Maven dependencies (OkHttp, kotlinx.serialization, kotlinx-coroutines). The APK is signed with the platform cert and imported into AOSP via `android_app_import` in `external/DollOSAIService/Android.bp`. The AIDL interface definitions live in AOSP as a `dollos-ai-aidl` java_library so both the Gradle project and Soong-built clients (DollOSService, SetupWizard) can use them. DollOSAIService runs as a privileged app with normal app uid (no `sharedUserId=system`) to avoid storage issues. Config stored in SharedPreferences via device-protected storage. Agent actions delegated to DollOSService via Binder IPC (`executeSystemAction`).
 
-**Tech Stack:** Kotlin, AIDL (Binder IPC), java.net.HttpURLConnection, SharedPreferences (device-protected storage), Android Notification API, Soong build system (Android.bp)
+**Tech Stack:** Kotlin, AIDL (Binder IPC), OkHttp 4.x (Maven), kotlinx.serialization (Maven), kotlinx-coroutines-android (Maven), SharedPreferences (device-protected storage), Android Notification API, Gradle build system (external) + Soong (AOSP integration)
+
+**Design Reference:** Self-implemented LLM client referencing Koog's design patterns for provider abstraction, streaming callback pattern, and tool calling schema generation. No Koog dependency.
 
 ---
 
 ## File Structure
 
-### DollOSAIService (new app)
+### DollOSAIService (Gradle project -- separate repo: ningyos/DollOSAIService)
 
 ```
-packages/apps/DollOSAIService/
-  Android.bp
-  AndroidManifest.xml
-  privapp-permissions-dollos-ai.xml
+DollOSAIService/                          # Root of ningyos/DollOSAIService repo
+  build.gradle.kts                        # Root build file
+  settings.gradle.kts                     # Settings
+  gradle.properties                       # Gradle properties
+  app/
+    build.gradle.kts                      # App module with Maven dependencies
+    src/main/
+      AndroidManifest.xml
+      aidl/org/dollos/ai/
+        IDollOSAIService.aidl             # Copied from AOSP dollos-ai-aidl
+        IDollOSAICallback.aidl            # Copied from AOSP dollos-ai-aidl
+      java/org/dollos/ai/
+        DollOSAIApp.kt
+        DollOSAIService.kt
+        DollOSAIServiceImpl.kt
+        llm/
+          LLMProvider.kt
+          LLMClient.kt
+          LLMResponse.kt
+          StreamingCallback.kt
+          SSEParser.kt
+          ClaudeProvider.kt
+          OpenAIProvider.kt
+          GrokProvider.kt
+          CustomProvider.kt
+        personality/
+          PersonalityManager.kt
+          SystemPromptBuilder.kt
+        usage/
+          UsageTracker.kt
+          BudgetManager.kt
+```
+
+### AOSP tree -- AIDL shared library (new)
+
+```
+packages/apps/DollOSAIService/            # AIDL-only directory in AOSP
+  Android.bp                              # java_library: dollos-ai-aidl
   aidl/org/dollos/ai/
-    IDollOSAIService.aidl
+    IDollOSAIService.aidl                 # Source of truth for AIDL interfaces
     IDollOSAICallback.aidl
-  src/org/dollos/ai/
-    DollOSAIApp.kt
-    DollOSAIService.kt
-    DollOSAIServiceImpl.kt
-    llm/
-      LLMClient.kt
-      LLMProvider.kt
-      ClaudeProvider.kt
-      GrokProvider.kt
-      OpenAIProvider.kt
-      CustomProvider.kt
-      LLMResponse.kt
-      StreamingCallback.kt
-    personality/
-      PersonalityManager.kt
-      SystemPromptBuilder.kt
-    usage/
-      UsageTracker.kt
-      BudgetManager.kt
+```
+
+### AOSP tree -- Prebuilt APK integration (new)
+
+```
+external/DollOSAIService/
+  Android.bp                              # android_app_import
+  prebuilt/
+    DollOSAIService.apk                   # Built by Gradle, copied here
+  privapp-permissions-dollos-ai.xml
 ```
 
 ### DollOSSetupWizard (modify existing)
 
 ```
 packages/apps/DollOSSetupWizard/
-  Android.bp                       -- add dollos-ai-aidl dependency
+  Android.bp                              # Add dollos-ai-aidl dependency
   src/org/dollos/setup/
-    SetupWizardActivity.kt         -- add DollOSAIService binding
-    ApiKeyPage.kt                  -- switch to DollOSAIService calls
-    PersonalityPage.kt             -- switch to DollOSAIService calls, add 5 fields
+    SetupWizardActivity.kt                # Add DollOSAIService binding
+    ApiKeyPage.kt                         # Switch to DollOSAIService calls
+    PersonalityPage.kt                    # Switch to DollOSAIService calls, add 5 fields
   res/layout/
-    page_api_key.xml               -- add foreground/background model selection
-    page_personality.xml           -- add backstory, directive, dynamism, address, language
+    page_api_key.xml                      # Add foreground/background model selection
+    page_personality.xml                  # Add backstory, directive, dynamism, address, language
 ```
 
 ### Vendor Config (modify existing)
 
 ```
 vendor/dollos/
-  dollos_bluejay.mk               -- add DollOSAIService to PRODUCT_PACKAGES + privapp perms
+  dollos_bluejay.mk                       # Add DollOSAIService to PRODUCT_PACKAGES + privapp perms
 ```
 
 ---
 
-## Task 1: AIDL Interfaces
+## Task 1: Create Gradle Project Skeleton
 
-**Goal:** Define the two AIDL interfaces for DollOSAIService: the main service interface and the callback interface for streaming/async events.
+**Goal:** Initialize the DollOSAIService Android Gradle project with proper structure, Kotlin DSL build files, Maven dependencies (OkHttp, kotlinx.serialization, kotlinx-coroutines), and AndroidManifest.
 
 **Files:**
-- Create: `packages/apps/DollOSAIService/aidl/org/dollos/ai/IDollOSAICallback.aidl`
-- Create: `packages/apps/DollOSAIService/aidl/org/dollos/ai/IDollOSAIService.aidl`
+- Create: `DollOSAIService/settings.gradle.kts`
+- Create: `DollOSAIService/build.gradle.kts`
+- Create: `DollOSAIService/gradle.properties`
+- Create: `DollOSAIService/app/build.gradle.kts`
+- Create: `DollOSAIService/app/src/main/AndroidManifest.xml`
 
-- [ ] **Step 1: Create IDollOSAICallback.aidl**
+- [ ] **Step 1: Create settings.gradle.kts**
+
+Create `DollOSAIService/settings.gradle.kts`:
+
+```kotlin
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolution {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = "DollOSAIService"
+include(":app")
+```
+
+- [ ] **Step 2: Create root build.gradle.kts**
+
+Create `DollOSAIService/build.gradle.kts`:
+
+```kotlin
+plugins {
+    id("com.android.application") version "8.7.3" apply false
+    id("org.jetbrains.kotlin.android") version "2.1.0" apply false
+    id("org.jetbrains.kotlin.plugin.serialization") version "2.1.0" apply false
+}
+```
+
+- [ ] **Step 3: Create gradle.properties**
+
+Create `DollOSAIService/gradle.properties`:
+
+```properties
+android.useAndroidX=true
+kotlin.code.style=official
+org.gradle.jvmargs=-Xmx2048m
+```
+
+- [ ] **Step 4: Create app/build.gradle.kts**
+
+Create `DollOSAIService/app/build.gradle.kts`:
+
+```kotlin
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.serialization")
+}
+
+android {
+    namespace = "org.dollos.ai"
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = "org.dollos.ai"
+        minSdk = 33
+        targetSdk = 35
+        versionCode = 1
+        versionName = "0.1.0"
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            // Platform signing is done during AOSP integration.
+            // For local dev, use debug keystore.
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+        freeCompilerArgs += listOf("-Xjvm-default=all")
+    }
+
+    buildFeatures {
+        aidl = true
+    }
+}
+
+dependencies {
+    // HTTP client
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
+
+    // JSON serialization
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+
+    // Coroutines
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+
+    // AndroidX
+    implementation("androidx.core:core-ktx:1.15.0")
+
+    // DollOSService AIDL stubs -- copied as JAR from AOSP build output
+    // See Task 2 for details on how to obtain this JAR.
+    compileOnly(files("libs/dollos-service-aidl.jar"))
+}
+```
+
+- [ ] **Step 5: Create AndroidManifest.xml**
+
+Create `DollOSAIService/app/src/main/AndroidManifest.xml`:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.dollos.ai">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:name=".DollOSAIApp"
+        android:label="DollOS AI Service"
+        android:persistent="true"
+        android:directBootAware="true">
+
+        <service
+            android:name=".DollOSAIService"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="org.dollos.ai.IDollOSAIService" />
+            </intent-filter>
+        </service>
+
+    </application>
+</manifest>
+```
+
+- [ ] **Step 6: Create libs/ directory for compile-only JARs**
+
+```bash
+mkdir -p DollOSAIService/app/libs
+# dollos-service-aidl.jar will be placed here in Task 2.
+```
+
+- [ ] **Step 7: Initialize git repo and commit**
+
+```bash
+cd DollOSAIService
+git init
+git add .
+git commit -m "feat: initialize Gradle Android project skeleton with Maven dependencies"
+```
+
+---
+
+## Task 2: AIDL Integration
+
+**Goal:** Create the AIDL interfaces for DollOSAIService in two places: (1) the AOSP Soong `dollos-ai-aidl` java_library (source of truth), and (2) copied into the Gradle project's `src/main/aidl/` for local compilation. Also set up the `dollos-service-aidl.jar` for the Gradle project to call DollOSService.
+
+**AIDL sharing strategy:** The AIDL `.aidl` files live canonically in the AOSP tree at `packages/apps/DollOSAIService/aidl/`. They are copied into the Gradle project's `app/src/main/aidl/` directory. When AIDL changes, update AOSP first, then copy to Gradle project.
+
+**Files:**
+- Create: `packages/apps/DollOSAIService/aidl/org/dollos/ai/IDollOSAICallback.aidl` (AOSP)
+- Create: `packages/apps/DollOSAIService/aidl/org/dollos/ai/IDollOSAIService.aidl` (AOSP)
+- Create: `packages/apps/DollOSAIService/Android.bp` (AOSP)
+- Create: `DollOSAIService/app/src/main/aidl/org/dollos/ai/IDollOSAICallback.aidl` (Gradle copy)
+- Create: `DollOSAIService/app/src/main/aidl/org/dollos/ai/IDollOSAIService.aidl` (Gradle copy)
+
+- [ ] **Step 1: Create IDollOSAICallback.aidl (AOSP -- source of truth)**
 
 Create `packages/apps/DollOSAIService/aidl/org/dollos/ai/IDollOSAICallback.aidl`:
 
@@ -99,7 +306,7 @@ interface IDollOSAICallback {
 }
 ```
 
-- [ ] **Step 2: Create IDollOSAIService.aidl**
+- [ ] **Step 2: Create IDollOSAIService.aidl (AOSP -- source of truth)**
 
 Create `packages/apps/DollOSAIService/aidl/org/dollos/ai/IDollOSAIService.aidl`:
 
@@ -159,26 +366,7 @@ interface IDollOSAIService {
 }
 ```
 
-- [ ] **Step 3: Commit**
-
-```bash
-cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add aidl/
-git commit -m "feat: add IDollOSAIService and IDollOSAICallback AIDL interfaces"
-```
-
----
-
-## Task 2: Android.bp, AndroidManifest.xml, and Permissions
-
-**Goal:** Create the Soong build file, Android manifest, and privapp permissions for DollOSAIService. The app uses normal app uid (no sharedUserId), platform cert, and privileged placement.
-
-**Files:**
-- Create: `packages/apps/DollOSAIService/Android.bp`
-- Create: `packages/apps/DollOSAIService/AndroidManifest.xml`
-- Create: `packages/apps/DollOSAIService/privapp-permissions-dollos-ai.xml`
-
-- [ ] **Step 1: Create Android.bp**
+- [ ] **Step 3: Create Android.bp for dollos-ai-aidl (AOSP)**
 
 Create `packages/apps/DollOSAIService/Android.bp`:
 
@@ -193,96 +381,66 @@ java_library {
     },
     platform_apis: true,
 }
-
-android_app {
-    name: "DollOSAIService",
-    srcs: [
-        "src/**/*.kt",
-    ],
-    platform_apis: true,
-    privileged: true,
-    certificate: "platform",
-    static_libs: [
-        "androidx.core_core-ktx",
-        "dollos-ai-aidl",
-        "dollos-service-aidl",
-    ],
-    kotlincflags: ["-Xjvm-default=all"],
-}
 ```
 
-Note: `dollos-service-aidl` is included so DollOSAIService can bind to DollOSService and call `executeSystemAction` and `getAvailableActions`.
+This only builds the AIDL as a java_library. The actual DollOSAIService app is the prebuilt APK in `external/DollOSAIService/`.
 
-- [ ] **Step 2: Create AndroidManifest.xml**
+- [ ] **Step 4: Copy AIDL files into Gradle project**
 
-Create `packages/apps/DollOSAIService/AndroidManifest.xml`:
-
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="org.dollos.ai">
-
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
-    <application
-        android:name=".DollOSAIApp"
-        android:label="DollOS AI Service"
-        android:persistent="true"
-        android:directBootAware="true">
-
-        <service
-            android:name=".DollOSAIService"
-            android:exported="true"
-            android:enabled="true">
-            <intent-filter>
-                <action android:name="org.dollos.ai.IDollOSAIService" />
-            </intent-filter>
-        </service>
-
-    </application>
-</manifest>
+```bash
+mkdir -p DollOSAIService/app/src/main/aidl/org/dollos/ai/
+cp packages/apps/DollOSAIService/aidl/org/dollos/ai/IDollOSAICallback.aidl \
+   DollOSAIService/app/src/main/aidl/org/dollos/ai/
+cp packages/apps/DollOSAIService/aidl/org/dollos/ai/IDollOSAIService.aidl \
+   DollOSAIService/app/src/main/aidl/org/dollos/ai/
 ```
 
-- [ ] **Step 3: Create privapp-permissions-dollos-ai.xml**
+The Gradle project compiles these AIDL files via `buildFeatures { aidl = true }` in `app/build.gradle.kts`.
 
-Create `packages/apps/DollOSAIService/privapp-permissions-dollos-ai.xml`:
+- [ ] **Step 5: Obtain dollos-service-aidl.jar for Gradle project**
 
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<permissions>
-    <privapp-permissions package="org.dollos.ai">
-        <permission name="android.permission.INTERNET" />
-        <permission name="android.permission.RECEIVE_BOOT_COMPLETED" />
-        <permission name="android.permission.FOREGROUND_SERVICE" />
-        <permission name="android.permission.POST_NOTIFICATIONS" />
-    </privapp-permissions>
-</permissions>
+DollOSAIService needs to call `IDollOSService.executeSystemAction()` and `IDollOSService.getAvailableActions()`. The `dollos-service-aidl` library is built by Soong in AOSP.
+
+Extract the JAR after building AOSP:
+
+```bash
+# After AOSP build, the JAR is at:
+# out/soong/.intermediates/packages/apps/DollOSService/dollos-service-aidl/android_common/turbine-combined/dollos-service-aidl.jar
+cp out/soong/.intermediates/packages/apps/DollOSService/dollos-service-aidl/android_common/turbine-combined/dollos-service-aidl.jar \
+   DollOSAIService/app/libs/dollos-service-aidl.jar
 ```
 
-- [ ] **Step 4: Commit**
+This JAR is `compileOnly` -- it is not bundled into the APK because the actual classes are already in the system image from DollOSService.
+
+- [ ] **Step 6: Commit AOSP AIDL**
 
 ```bash
 cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add Android.bp AndroidManifest.xml privapp-permissions-dollos-ai.xml
-git commit -m "feat: add Android.bp, manifest, and privapp permissions for DollOSAIService"
+git add aidl/ Android.bp
+git commit -m "feat: add dollos-ai-aidl java_library with IDollOSAIService and IDollOSAICallback"
+```
+
+- [ ] **Step 7: Commit Gradle AIDL copy**
+
+```bash
+cd DollOSAIService
+git add app/src/main/aidl/ app/libs/
+git commit -m "feat: add AIDL interface copies and dollos-service-aidl.jar for compilation"
 ```
 
 ---
 
-## Task 3: Application Class and Service Entry Point
+## Task 3: Application + Service Skeleton
 
-**Goal:** Create the Application class (SharedPreferences init, notification channel) and the Service class (Binder binding, DollOSService connection for agent delegation).
+**Goal:** Create the Application class (SharedPreferences init, notification channel) and the Service class (Binder binding, DollOSService connection for agent delegation). Uses device-protected storage for SharedPreferences (learned from DollOSService issues with direct boot).
 
 **Files:**
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/DollOSAIApp.kt`
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/DollOSAIService.kt`
+- Create: `DollOSAIService/app/src/main/java/org/dollos/ai/DollOSAIApp.kt`
+- Create: `DollOSAIService/app/src/main/java/org/dollos/ai/DollOSAIService.kt`
 
 - [ ] **Step 1: Create DollOSAIApp.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/DollOSAIApp.kt`:
+Create `DollOSAIService/app/src/main/java/org/dollos/ai/DollOSAIApp.kt`:
 
 ```kotlin
 package org.dollos.ai
@@ -337,7 +495,7 @@ class DollOSAIApp : Application() {
 
 - [ ] **Step 2: Create DollOSAIService.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/DollOSAIService.kt`:
+Create `DollOSAIService/app/src/main/java/org/dollos/ai/DollOSAIService.kt`:
 
 ```kotlin
 package org.dollos.ai
@@ -409,29 +567,32 @@ class DollOSAIService : Service() {
 - [ ] **Step 3: Commit**
 
 ```bash
-cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add src/org/dollos/ai/DollOSAIApp.kt src/org/dollos/ai/DollOSAIService.kt
+cd DollOSAIService
+git add app/src/main/java/org/dollos/ai/DollOSAIApp.kt \
+        app/src/main/java/org/dollos/ai/DollOSAIService.kt
 git commit -m "feat: add DollOSAIApp and DollOSAIService entry point with DollOSService binding"
 ```
 
 ---
 
-## Task 4: LLM Client -- Provider Interface and Response Types
+## Task 4: LLM Provider Abstraction
 
-**Goal:** Define the LLM provider abstraction, provider enum, response data classes, and streaming callback interface.
+**Goal:** Define the LLM provider interface, provider enum with per-provider temperature clamping, response data classes (using kotlinx.serialization), streaming callback interface, and the LLMClient interface.
 
 **Files:**
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/llm/LLMClient.kt`
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/llm/LLMProvider.kt`
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/llm/LLMResponse.kt`
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/llm/StreamingCallback.kt`
+- Create: `DollOSAIService/app/src/main/java/org/dollos/ai/llm/LLMProvider.kt`
+- Create: `DollOSAIService/app/src/main/java/org/dollos/ai/llm/LLMResponse.kt`
+- Create: `DollOSAIService/app/src/main/java/org/dollos/ai/llm/StreamingCallback.kt`
+- Create: `DollOSAIService/app/src/main/java/org/dollos/ai/llm/LLMClient.kt`
 
 - [ ] **Step 1: Create LLMProvider.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/llm/LLMProvider.kt`:
+Create `DollOSAIService/app/src/main/java/org/dollos/ai/llm/LLMProvider.kt`:
 
 ```kotlin
 package org.dollos.ai.llm
+
+import kotlinx.serialization.Serializable
 
 enum class LLMProviderType(
     val displayName: String,
@@ -461,6 +622,7 @@ enum class LLMProviderType(
     }
 }
 
+@Serializable
 data class ModelConfig(
     val providerType: LLMProviderType,
     val apiKey: String,
@@ -471,11 +633,14 @@ data class ModelConfig(
 
 - [ ] **Step 2: Create LLMResponse.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/llm/LLMResponse.kt`:
+Create `DollOSAIService/app/src/main/java/org/dollos/ai/llm/LLMResponse.kt`:
 
 ```kotlin
 package org.dollos.ai.llm
 
+import kotlinx.serialization.Serializable
+
+@Serializable
 data class LLMResponse(
     val content: String,
     val inputTokens: Long,
@@ -485,27 +650,32 @@ data class LLMResponse(
     val finishReason: String = "stop"
 )
 
+@Serializable
 data class ToolCall(
     val id: String,
     val name: String,
     val arguments: String
 )
 
+@Serializable
 data class LLMMessage(
     val role: String,
     val content: String
 )
 
+@Serializable
 data class ToolDefinition(
     val name: String,
     val description: String,
-    val parameters: String
+    val parameters: String // JSON Schema string
 )
+
+class LLMException(val errorCode: String, message: String) : Exception(message)
 ```
 
 - [ ] **Step 3: Create StreamingCallback.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/llm/StreamingCallback.kt`:
+Create `DollOSAIService/app/src/main/java/org/dollos/ai/llm/StreamingCallback.kt`:
 
 ```kotlin
 package org.dollos.ai.llm
@@ -519,7 +689,7 @@ interface StreamingCallback {
 
 - [ ] **Step 4: Create LLMClient.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/llm/LLMClient.kt`:
+Create `DollOSAIService/app/src/main/java/org/dollos/ai/llm/LLMClient.kt`:
 
 ```kotlin
 package org.dollos.ai.llm
@@ -549,38 +719,139 @@ interface LLMClient {
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add src/org/dollos/ai/llm/
+cd DollOSAIService
+git add app/src/main/java/org/dollos/ai/llm/
 git commit -m "feat: add LLM client interface, provider types, response models, and streaming callback"
 ```
 
 ---
 
-## Task 5: LLM Provider Implementations
+## Task 5: SSE Streaming Parser
 
-**Goal:** Implement concrete LLM providers for Claude, Grok, OpenAI, and Custom endpoints using `java.net.HttpURLConnection`. Each provider handles its own API format, streaming SSE parsing, and tool call extraction.
+**Goal:** Implement a reusable SSE (Server-Sent Events) parser using OkHttp. This parser handles the `data:` line protocol, partial JSON assembly, connection drops, and delivers events to a callback. Used by all provider implementations.
 
 **Files:**
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/llm/ClaudeProvider.kt`
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/llm/OpenAIProvider.kt`
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/llm/GrokProvider.kt`
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/llm/CustomProvider.kt`
+- Create: `DollOSAIService/app/src/main/java/org/dollos/ai/llm/SSEParser.kt`
 
-- [ ] **Step 1: Create ClaudeProvider.kt**
+- [ ] **Step 1: Create SSEParser.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/llm/ClaudeProvider.kt`:
+Create `DollOSAIService/app/src/main/java/org/dollos/ai/llm/SSEParser.kt`:
 
 ```kotlin
 package org.dollos.ai.llm
 
 import android.util.Log
-import org.json.JSONArray
-import org.json.JSONObject
+import okhttp3.Response
 import java.io.BufferedReader
 import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
+
+interface SSEEventHandler {
+    fun onEvent(eventType: String, data: String)
+    fun onDone()
+    fun onError(error: Exception)
+}
+
+class SSEParser(private val handler: SSEEventHandler) {
+
+    companion object {
+        private const val TAG = "SSEParser"
+    }
+
+    fun parse(response: Response) {
+        val body = response.body ?: run {
+            handler.onError(LLMException("NO_BODY", "Response body is null"))
+            return
+        }
+
+        val reader = BufferedReader(InputStreamReader(body.byteStream()))
+        try {
+            var currentEvent = ""
+            var currentData = StringBuilder()
+
+            var line: String?
+            while (reader.readLine().also { line = it } != null) {
+                val l = line ?: continue
+
+                when {
+                    l.startsWith("event: ") -> {
+                        currentEvent = l.substring(7).trim()
+                    }
+                    l.startsWith("data: ") -> {
+                        val data = l.substring(6)
+                        if (data == "[DONE]") {
+                            handler.onDone()
+                            return
+                        }
+                        currentData.append(data)
+                    }
+                    l.isEmpty() -> {
+                        // Empty line = end of event
+                        if (currentData.isNotEmpty()) {
+                            handler.onEvent(currentEvent, currentData.toString())
+                            currentEvent = ""
+                            currentData = StringBuilder()
+                        }
+                    }
+                }
+            }
+
+            // Stream ended without [DONE] -- treat as done
+            if (currentData.isNotEmpty()) {
+                handler.onEvent(currentEvent, currentData.toString())
+            }
+            handler.onDone()
+        } catch (e: Exception) {
+            handler.onError(e)
+        } finally {
+            reader.close()
+            body.close()
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+cd DollOSAIService
+git add app/src/main/java/org/dollos/ai/llm/SSEParser.kt
+git commit -m "feat: add SSE streaming parser using OkHttp response body"
+```
+
+---
+
+## Task 6: Provider Implementations
+
+**Goal:** Implement concrete LLM providers for Claude, OpenAI, Grok, and Custom endpoints using OkHttp. Each provider handles its own API format, SSE streaming, tool call extraction, and retry with exponential backoff. Grok and Custom use OpenAI-compatible format.
+
+**Files:**
+- Create: `DollOSAIService/app/src/main/java/org/dollos/ai/llm/ClaudeProvider.kt`
+- Create: `DollOSAIService/app/src/main/java/org/dollos/ai/llm/OpenAIProvider.kt`
+- Create: `DollOSAIService/app/src/main/java/org/dollos/ai/llm/GrokProvider.kt`
+- Create: `DollOSAIService/app/src/main/java/org/dollos/ai/llm/CustomProvider.kt`
+
+- [ ] **Step 1: Create ClaudeProvider.kt**
+
+Create `DollOSAIService/app/src/main/java/org/dollos/ai/llm/ClaudeProvider.kt`:
+
+```kotlin
+package org.dollos.ai.llm
+
+import android.util.Log
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
+import kotlinx.serialization.json.put
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class ClaudeProvider(private val config: ModelConfig) : LLMClient {
@@ -589,11 +860,21 @@ class ClaudeProvider(private val config: ModelConfig) : LLMClient {
         private const val TAG = "ClaudeProvider"
         private const val BASE_URL = "https://api.anthropic.com/v1/messages"
         private const val API_VERSION = "2023-06-01"
+        private const val MAX_RETRIES = 3
+        private val JSON_MEDIA_TYPE = "application/json".toMediaType()
     }
 
     override val providerType = LLMProviderType.CLAUDE
     private val cancelled = AtomicBoolean(false)
-    private var currentConnection: HttpURLConnection? = null
+    private val json = Json { ignoreUnknownKeys = true }
+
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    private var currentCall: okhttp3.Call? = null
 
     override fun sendBlocking(
         messages: List<LLMMessage>,
@@ -603,23 +884,7 @@ class ClaudeProvider(private val config: ModelConfig) : LLMClient {
     ): LLMResponse {
         cancelled.set(false)
         val body = buildRequestBody(messages, systemPrompt, temperature, tools, stream = false)
-        val conn = openConnection()
-        currentConnection = conn
-
-        try {
-            writeBody(conn, body)
-            val responseCode = conn.responseCode
-            if (responseCode != 200) {
-                val errorBody = conn.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                throw LLMException("HTTP $responseCode", errorBody)
-            }
-
-            val responseText = conn.inputStream.bufferedReader().readText()
-            return parseBlockingResponse(responseText)
-        } finally {
-            currentConnection = null
-            conn.disconnect()
-        }
+        return executeWithRetry { doBlockingRequest(body) }
     }
 
     override fun sendStreaming(
@@ -631,19 +896,27 @@ class ClaudeProvider(private val config: ModelConfig) : LLMClient {
     ) {
         cancelled.set(false)
         val body = buildRequestBody(messages, systemPrompt, temperature, tools, stream = true)
-        val conn = openConnection()
-        currentConnection = conn
+
+        val request = Request.Builder()
+            .url(BASE_URL)
+            .header("Content-Type", "application/json")
+            .header("x-api-key", config.apiKey)
+            .header("anthropic-version", API_VERSION)
+            .post(body.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+
+        val call = httpClient.newCall(request)
+        currentCall = call
 
         try {
-            writeBody(conn, body)
-            val responseCode = conn.responseCode
-            if (responseCode != 200) {
-                val errorBody = conn.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                callback.onError("HTTP_$responseCode", errorBody)
+            val response = call.execute()
+            if (!response.isSuccessful) {
+                val errorBody = response.body?.string() ?: "Unknown error"
+                response.close()
+                callback.onError("HTTP_${response.code}", errorBody)
                 return
             }
 
-            val reader = BufferedReader(InputStreamReader(conn.inputStream))
             val fullContent = StringBuilder()
             var inputTokens = 0L
             var outputTokens = 0L
@@ -653,109 +926,153 @@ class ClaudeProvider(private val config: ModelConfig) : LLMClient {
             val currentToolArgs = StringBuilder()
             var inToolUse = false
 
-            var line: String?
-            while (reader.readLine().also { line = it } != null) {
-                if (cancelled.get()) {
-                    callback.onError("CANCELLED", "Request cancelled by user")
-                    return
-                }
+            val parser = SSEParser(object : SSEEventHandler {
+                override fun onEvent(eventType: String, data: String) {
+                    if (cancelled.get()) return
+                    try {
+                        val event = Json.parseToJsonElement(data).jsonObject
+                        val type = event["type"]?.jsonPrimitive?.content ?: ""
 
-                val data = line ?: continue
-                if (!data.startsWith("data: ")) continue
-                val payload = data.substring(6).trim()
-                if (payload == "[DONE]" || payload.isEmpty()) continue
-
-                val event = JSONObject(payload)
-                val type = event.optString("type", "")
-
-                when (type) {
-                    "message_start" -> {
-                        val usage = event.optJSONObject("message")?.optJSONObject("usage")
-                        inputTokens = usage?.optLong("input_tokens", 0) ?: 0
-                    }
-                    "content_block_start" -> {
-                        val block = event.optJSONObject("content_block")
-                        val blockType = block?.optString("type", "")
-                        if (blockType == "tool_use") {
-                            inToolUse = true
-                            currentToolId = block.optString("id", "")
-                            currentToolName = block.optString("name", "")
-                            currentToolArgs.clear()
-                        }
-                    }
-                    "content_block_delta" -> {
-                        val delta = event.optJSONObject("delta")
-                        val deltaType = delta?.optString("type", "")
-                        if (deltaType == "text_delta") {
-                            val text = delta.optString("text", "")
-                            if (text.isNotEmpty()) {
-                                fullContent.append(text)
-                                callback.onToken(text)
+                        when (type) {
+                            "message_start" -> {
+                                val usage = event["message"]?.jsonObject?.get("usage")?.jsonObject
+                                inputTokens = usage?.get("input_tokens")?.jsonPrimitive?.long ?: 0
                             }
-                        } else if (deltaType == "input_json_delta") {
-                            val partial = delta.optString("partial_json", "")
-                            currentToolArgs.append(partial)
+                            "content_block_start" -> {
+                                val block = event["content_block"]?.jsonObject
+                                val blockType = block?.get("type")?.jsonPrimitive?.content ?: ""
+                                if (blockType == "tool_use") {
+                                    inToolUse = true
+                                    currentToolId = block["id"]?.jsonPrimitive?.content ?: ""
+                                    currentToolName = block["name"]?.jsonPrimitive?.content ?: ""
+                                    currentToolArgs.clear()
+                                }
+                            }
+                            "content_block_delta" -> {
+                                val delta = event["delta"]?.jsonObject
+                                val deltaType = delta?.get("type")?.jsonPrimitive?.content ?: ""
+                                if (deltaType == "text_delta") {
+                                    val text = delta["text"]?.jsonPrimitive?.content ?: ""
+                                    if (text.isNotEmpty()) {
+                                        fullContent.append(text)
+                                        callback.onToken(text)
+                                    }
+                                } else if (deltaType == "input_json_delta") {
+                                    val partial = delta["partial_json"]?.jsonPrimitive?.content ?: ""
+                                    currentToolArgs.append(partial)
+                                }
+                            }
+                            "content_block_stop" -> {
+                                if (inToolUse) {
+                                    toolCalls.add(ToolCall(
+                                        id = currentToolId,
+                                        name = currentToolName,
+                                        arguments = currentToolArgs.toString()
+                                    ))
+                                    inToolUse = false
+                                }
+                            }
+                            "message_delta" -> {
+                                val usage = event["usage"]?.jsonObject
+                                outputTokens = usage?.get("output_tokens")?.jsonPrimitive?.long ?: 0
+                            }
                         }
-                    }
-                    "content_block_stop" -> {
-                        if (inToolUse) {
-                            toolCalls.add(ToolCall(
-                                id = currentToolId,
-                                name = currentToolName,
-                                arguments = currentToolArgs.toString()
-                            ))
-                            inToolUse = false
-                        }
-                    }
-                    "message_delta" -> {
-                        val usage = event.optJSONObject("usage")
-                        outputTokens = usage?.optLong("output_tokens", 0) ?: 0
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to parse SSE event", e)
                     }
                 }
-            }
 
-            val response = LLMResponse(
-                content = fullContent.toString(),
-                inputTokens = inputTokens,
-                outputTokens = outputTokens,
-                model = config.model,
-                toolCalls = toolCalls
-            )
-            callback.onComplete(response)
+                override fun onDone() {
+                    // Handled below after parser returns
+                }
+
+                override fun onError(error: Exception) {
+                    if (!cancelled.get()) {
+                        callback.onError("STREAM_ERROR", error.message ?: "Unknown streaming error")
+                    }
+                }
+            })
+
+            parser.parse(response)
+
+            if (!cancelled.get()) {
+                val llmResponse = LLMResponse(
+                    content = fullContent.toString(),
+                    inputTokens = inputTokens,
+                    outputTokens = outputTokens,
+                    model = config.model,
+                    toolCalls = toolCalls
+                )
+                callback.onComplete(llmResponse)
+            }
         } catch (e: Exception) {
             if (!cancelled.get()) {
                 Log.e(TAG, "Streaming error", e)
                 callback.onError("STREAM_ERROR", e.message ?: "Unknown streaming error")
             }
         } finally {
-            currentConnection = null
-            conn.disconnect()
+            currentCall = null
         }
     }
 
     override fun cancelCurrent() {
         cancelled.set(true)
-        currentConnection?.disconnect()
+        currentCall?.cancel()
     }
 
-    private fun openConnection(): HttpURLConnection {
-        val url = URL(BASE_URL)
-        val conn = url.openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("x-api-key", config.apiKey)
-        conn.setRequestProperty("anthropic-version", API_VERSION)
-        conn.doOutput = true
-        conn.connectTimeout = 30000
-        conn.readTimeout = 120000
-        return conn
+    private fun doBlockingRequest(body: String): LLMResponse {
+        val request = Request.Builder()
+            .url(BASE_URL)
+            .header("Content-Type", "application/json")
+            .header("x-api-key", config.apiKey)
+            .header("anthropic-version", API_VERSION)
+            .post(body.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+
+        val call = httpClient.newCall(request)
+        currentCall = call
+
+        try {
+            val response = call.execute()
+            if (!response.isSuccessful) {
+                val errorBody = response.body?.string() ?: "Unknown error"
+                response.close()
+                throw LLMException("HTTP_${response.code}", errorBody)
+            }
+
+            val responseText = response.body?.string() ?: throw LLMException("NO_BODY", "Empty response")
+            response.close()
+            return parseBlockingResponse(responseText)
+        } finally {
+            currentCall = null
+        }
     }
 
-    private fun writeBody(conn: HttpURLConnection, body: JSONObject) {
-        val writer = OutputStreamWriter(conn.outputStream)
-        writer.write(body.toString())
-        writer.flush()
-        writer.close()
+    private fun <T> executeWithRetry(block: () -> T): T {
+        var lastException: Exception? = null
+        for (attempt in 0 until MAX_RETRIES) {
+            try {
+                return block()
+            } catch (e: LLMException) {
+                lastException = e
+                if (e.errorCode.startsWith("HTTP_4") && e.errorCode != "HTTP_429") {
+                    throw e // Client error (except rate limit) -- do not retry
+                }
+                if (attempt < MAX_RETRIES - 1) {
+                    val delayMs = (1000L * (1 shl attempt)) // Exponential backoff: 1s, 2s, 4s
+                    Log.w(TAG, "Retry attempt ${attempt + 1} after ${delayMs}ms: ${e.errorCode}")
+                    Thread.sleep(delayMs)
+                }
+            } catch (e: Exception) {
+                lastException = e
+                if (attempt < MAX_RETRIES - 1) {
+                    val delayMs = (1000L * (1 shl attempt))
+                    Log.w(TAG, "Retry attempt ${attempt + 1} after ${delayMs}ms: ${e.message}")
+                    Thread.sleep(delayMs)
+                }
+            }
+        }
+        throw lastException ?: LLMException("RETRY_EXHAUSTED", "All retries failed")
     }
 
     private fun buildRequestBody(
@@ -764,103 +1081,116 @@ class ClaudeProvider(private val config: ModelConfig) : LLMClient {
         temperature: Float,
         tools: List<ToolDefinition>,
         stream: Boolean
-    ): JSONObject {
-        val body = JSONObject()
-        body.put("model", config.model)
-        body.put("max_tokens", 4096)
-        body.put("temperature", temperature.toDouble())
-        body.put("stream", stream)
+    ): String {
+        val body = buildJsonObject {
+            put("model", config.model)
+            put("max_tokens", 4096)
+            put("temperature", temperature.toDouble())
+            put("stream", stream)
 
-        if (systemPrompt.isNotBlank()) {
-            body.put("system", systemPrompt)
-        }
-
-        val messagesArray = JSONArray()
-        for (msg in messages) {
-            val msgObj = JSONObject()
-            msgObj.put("role", msg.role)
-            msgObj.put("content", msg.content)
-            messagesArray.put(msgObj)
-        }
-        body.put("messages", messagesArray)
-
-        if (tools.isNotEmpty()) {
-            val toolsArray = JSONArray()
-            for (tool in tools) {
-                val toolObj = JSONObject()
-                toolObj.put("name", tool.name)
-                toolObj.put("description", tool.description)
-                toolObj.put("input_schema", JSONObject(tool.parameters))
-                toolsArray.put(toolObj)
+            if (systemPrompt.isNotBlank()) {
+                put("system", systemPrompt)
             }
-            body.put("tools", toolsArray)
-        }
 
-        return body
+            put("messages", buildJsonArray {
+                for (msg in messages) {
+                    add(buildJsonObject {
+                        put("role", msg.role)
+                        put("content", msg.content)
+                    })
+                }
+            })
+
+            if (tools.isNotEmpty()) {
+                put("tools", buildJsonArray {
+                    for (tool in tools) {
+                        add(buildJsonObject {
+                            put("name", tool.name)
+                            put("description", tool.description)
+                            put("input_schema", Json.parseToJsonElement(tool.parameters))
+                        })
+                    }
+                })
+            }
+        }
+        return body.toString()
     }
 
     private fun parseBlockingResponse(responseText: String): LLMResponse {
-        val json = JSONObject(responseText)
-        val content = json.optJSONArray("content")
+        val jsonObj = Json.parseToJsonElement(responseText).jsonObject
+        val content = jsonObj["content"]?.jsonArray
         val textBuilder = StringBuilder()
         val toolCalls = mutableListOf<ToolCall>()
 
-        if (content != null) {
-            for (i in 0 until content.length()) {
-                val block = content.getJSONObject(i)
-                when (block.optString("type")) {
-                    "text" -> textBuilder.append(block.optString("text", ""))
-                    "tool_use" -> toolCalls.add(ToolCall(
-                        id = block.optString("id", ""),
-                        name = block.optString("name", ""),
-                        arguments = block.optJSONObject("input")?.toString() ?: "{}"
-                    ))
-                }
+        content?.forEach { block ->
+            val obj = block.jsonObject
+            when (obj["type"]?.jsonPrimitive?.content) {
+                "text" -> textBuilder.append(obj["text"]?.jsonPrimitive?.content ?: "")
+                "tool_use" -> toolCalls.add(ToolCall(
+                    id = obj["id"]?.jsonPrimitive?.content ?: "",
+                    name = obj["name"]?.jsonPrimitive?.content ?: "",
+                    arguments = obj["input"]?.toString() ?: "{}"
+                ))
             }
         }
 
-        val usage = json.optJSONObject("usage")
+        val usage = jsonObj["usage"]?.jsonObject
         return LLMResponse(
             content = textBuilder.toString(),
-            inputTokens = usage?.optLong("input_tokens", 0) ?: 0,
-            outputTokens = usage?.optLong("output_tokens", 0) ?: 0,
-            model = json.optString("model", config.model),
+            inputTokens = usage?.get("input_tokens")?.jsonPrimitive?.long ?: 0,
+            outputTokens = usage?.get("output_tokens")?.jsonPrimitive?.long ?: 0,
+            model = jsonObj["model"]?.jsonPrimitive?.content ?: config.model,
             toolCalls = toolCalls,
-            finishReason = json.optString("stop_reason", "end_turn")
+            finishReason = jsonObj["stop_reason"]?.jsonPrimitive?.content ?: "end_turn"
         )
     }
 }
-
-class LLMException(val errorCode: String, message: String) : Exception(message)
 ```
 
 - [ ] **Step 2: Create OpenAIProvider.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/llm/OpenAIProvider.kt`:
+Create `DollOSAIService/app/src/main/java/org/dollos/ai/llm/OpenAIProvider.kt`:
 
 ```kotlin
 package org.dollos.ai.llm
 
 import android.util.Log
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
+import kotlinx.serialization.json.put
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-class OpenAIProvider(private val config: ModelConfig) : LLMClient {
+open class OpenAIProvider(
+    private val config: ModelConfig,
+    private val baseUrl: String = "https://api.openai.com/v1/chat/completions"
+) : LLMClient {
 
     companion object {
         private const val TAG = "OpenAIProvider"
-        private const val BASE_URL = "https://api.openai.com/v1/chat/completions"
+        private const val MAX_RETRIES = 3
+        private val JSON_MEDIA_TYPE = "application/json".toMediaType()
     }
 
-    override val providerType = LLMProviderType.OPENAI
+    override val providerType = config.providerType
     private val cancelled = AtomicBoolean(false)
-    private var currentConnection: HttpURLConnection? = null
+
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    private var currentCall: okhttp3.Call? = null
 
     override fun sendBlocking(
         messages: List<LLMMessage>,
@@ -870,23 +1200,7 @@ class OpenAIProvider(private val config: ModelConfig) : LLMClient {
     ): LLMResponse {
         cancelled.set(false)
         val body = buildRequestBody(messages, systemPrompt, temperature, tools, stream = false)
-        val conn = openConnection()
-        currentConnection = conn
-
-        try {
-            writeBody(conn, body)
-            val responseCode = conn.responseCode
-            if (responseCode != 200) {
-                val errorBody = conn.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                throw LLMException("HTTP_$responseCode", errorBody)
-            }
-
-            val responseText = conn.inputStream.bufferedReader().readText()
-            return parseBlockingResponse(responseText)
-        } finally {
-            currentConnection = null
-            conn.disconnect()
-        }
+        return executeWithRetry { doBlockingRequest(body) }
     }
 
     override fun sendStreaming(
@@ -898,19 +1212,26 @@ class OpenAIProvider(private val config: ModelConfig) : LLMClient {
     ) {
         cancelled.set(false)
         val body = buildRequestBody(messages, systemPrompt, temperature, tools, stream = true)
-        val conn = openConnection()
-        currentConnection = conn
+
+        val request = Request.Builder()
+            .url(baseUrl)
+            .header("Content-Type", "application/json")
+            .header("Authorization", "Bearer ${config.apiKey}")
+            .post(body.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+
+        val call = httpClient.newCall(request)
+        currentCall = call
 
         try {
-            writeBody(conn, body)
-            val responseCode = conn.responseCode
-            if (responseCode != 200) {
-                val errorBody = conn.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                callback.onError("HTTP_$responseCode", errorBody)
+            val response = call.execute()
+            if (!response.isSuccessful) {
+                val errorBody = response.body?.string() ?: "Unknown error"
+                response.close()
+                callback.onError("HTTP_${response.code}", errorBody)
                 return
             }
 
-            val reader = BufferedReader(InputStreamReader(conn.inputStream))
             val fullContent = StringBuilder()
             var inputTokens = 0L
             var outputTokens = 0L
@@ -919,111 +1240,146 @@ class OpenAIProvider(private val config: ModelConfig) : LLMClient {
             val toolCallIds = mutableMapOf<Int, String>()
             val toolCallNames = mutableMapOf<Int, String>()
 
-            var line: String?
-            while (reader.readLine().also { line = it } != null) {
-                if (cancelled.get()) {
-                    callback.onError("CANCELLED", "Request cancelled by user")
-                    return
-                }
-
-                val data = line ?: continue
-                if (!data.startsWith("data: ")) continue
-                val payload = data.substring(6).trim()
-                if (payload == "[DONE]" || payload.isEmpty()) continue
-
-                val chunk = JSONObject(payload)
-                val choices = chunk.optJSONArray("choices")
-                if (choices != null && choices.length() > 0) {
-                    val delta = choices.getJSONObject(0).optJSONObject("delta")
-                    if (delta != null) {
-                        val content = delta.optString("content", "")
-                        if (content.isNotEmpty()) {
-                            fullContent.append(content)
-                            callback.onToken(content)
-                        }
-
-                        val deltaToolCalls = delta.optJSONArray("tool_calls")
-                        if (deltaToolCalls != null) {
-                            for (i in 0 until deltaToolCalls.length()) {
-                                val tc = deltaToolCalls.getJSONObject(i)
-                                val index = tc.optInt("index", 0)
-                                val id = tc.optString("id", "")
-                                val function = tc.optJSONObject("function")
-
-                                if (id.isNotEmpty()) {
-                                    toolCallIds[index] = id
+            val parser = SSEParser(object : SSEEventHandler {
+                override fun onEvent(eventType: String, data: String) {
+                    if (cancelled.get()) return
+                    try {
+                        val chunk = Json.parseToJsonElement(data).jsonObject
+                        val choices = chunk["choices"]?.jsonArray
+                        if (choices != null && choices.isNotEmpty()) {
+                            val delta = choices[0].jsonObject["delta"]?.jsonObject
+                            if (delta != null) {
+                                val content = delta["content"]?.jsonPrimitive?.content ?: ""
+                                if (content.isNotEmpty()) {
+                                    fullContent.append(content)
+                                    callback.onToken(content)
                                 }
-                                if (function != null) {
-                                    val name = function.optString("name", "")
-                                    if (name.isNotEmpty()) {
-                                        toolCallNames[index] = name
-                                    }
-                                    val args = function.optString("arguments", "")
-                                    if (args.isNotEmpty()) {
-                                        toolCallArgs.getOrPut(index) { StringBuilder() }.append(args)
+
+                                val deltaToolCalls = delta["tool_calls"]?.jsonArray
+                                deltaToolCalls?.forEach { tc ->
+                                    val tcObj = tc.jsonObject
+                                    val index = tcObj["index"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0
+                                    val id = tcObj["id"]?.jsonPrimitive?.content ?: ""
+                                    val function = tcObj["function"]?.jsonObject
+
+                                    if (id.isNotEmpty()) toolCallIds[index] = id
+                                    if (function != null) {
+                                        val name = function["name"]?.jsonPrimitive?.content ?: ""
+                                        if (name.isNotEmpty()) toolCallNames[index] = name
+                                        val args = function["arguments"]?.jsonPrimitive?.content ?: ""
+                                        if (args.isNotEmpty()) {
+                                            toolCallArgs.getOrPut(index) { StringBuilder() }.append(args)
+                                        }
                                     }
                                 }
                             }
                         }
+
+                        val usage = chunk["usage"]?.jsonObject
+                        if (usage != null) {
+                            inputTokens = usage["prompt_tokens"]?.jsonPrimitive?.long ?: inputTokens
+                            outputTokens = usage["completion_tokens"]?.jsonPrimitive?.long ?: outputTokens
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to parse SSE chunk", e)
                     }
                 }
 
-                val usage = chunk.optJSONObject("usage")
-                if (usage != null) {
-                    inputTokens = usage.optLong("prompt_tokens", inputTokens)
-                    outputTokens = usage.optLong("completion_tokens", outputTokens)
+                override fun onDone() {}
+                override fun onError(error: Exception) {
+                    if (!cancelled.get()) {
+                        callback.onError("STREAM_ERROR", error.message ?: "Unknown streaming error")
+                    }
                 }
-            }
+            })
 
-            for ((index, id) in toolCallIds) {
-                toolCalls.add(ToolCall(
-                    id = id,
-                    name = toolCallNames[index] ?: "",
-                    arguments = toolCallArgs[index]?.toString() ?: "{}"
-                ))
-            }
+            parser.parse(response)
 
-            val response = LLMResponse(
-                content = fullContent.toString(),
-                inputTokens = inputTokens,
-                outputTokens = outputTokens,
-                model = config.model,
-                toolCalls = toolCalls
-            )
-            callback.onComplete(response)
+            if (!cancelled.get()) {
+                for ((index, id) in toolCallIds) {
+                    toolCalls.add(ToolCall(
+                        id = id,
+                        name = toolCallNames[index] ?: "",
+                        arguments = toolCallArgs[index]?.toString() ?: "{}"
+                    ))
+                }
+
+                val llmResponse = LLMResponse(
+                    content = fullContent.toString(),
+                    inputTokens = inputTokens,
+                    outputTokens = outputTokens,
+                    model = config.model,
+                    toolCalls = toolCalls
+                )
+                callback.onComplete(llmResponse)
+            }
         } catch (e: Exception) {
             if (!cancelled.get()) {
                 Log.e(TAG, "Streaming error", e)
                 callback.onError("STREAM_ERROR", e.message ?: "Unknown streaming error")
             }
         } finally {
-            currentConnection = null
-            conn.disconnect()
+            currentCall = null
         }
     }
 
     override fun cancelCurrent() {
         cancelled.set(true)
-        currentConnection?.disconnect()
+        currentCall?.cancel()
     }
 
-    private fun openConnection(): HttpURLConnection {
-        val url = URL(BASE_URL)
-        val conn = url.openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("Authorization", "Bearer ${config.apiKey}")
-        conn.doOutput = true
-        conn.connectTimeout = 30000
-        conn.readTimeout = 120000
-        return conn
+    private fun doBlockingRequest(body: String): LLMResponse {
+        val request = Request.Builder()
+            .url(baseUrl)
+            .header("Content-Type", "application/json")
+            .header("Authorization", "Bearer ${config.apiKey}")
+            .post(body.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+
+        val call = httpClient.newCall(request)
+        currentCall = call
+
+        try {
+            val response = call.execute()
+            if (!response.isSuccessful) {
+                val errorBody = response.body?.string() ?: "Unknown error"
+                response.close()
+                throw LLMException("HTTP_${response.code}", errorBody)
+            }
+
+            val responseText = response.body?.string() ?: throw LLMException("NO_BODY", "Empty response")
+            response.close()
+            return parseBlockingResponse(responseText)
+        } finally {
+            currentCall = null
+        }
     }
 
-    private fun writeBody(conn: HttpURLConnection, body: JSONObject) {
-        val writer = OutputStreamWriter(conn.outputStream)
-        writer.write(body.toString())
-        writer.flush()
-        writer.close()
+    private fun <T> executeWithRetry(block: () -> T): T {
+        var lastException: Exception? = null
+        for (attempt in 0 until MAX_RETRIES) {
+            try {
+                return block()
+            } catch (e: LLMException) {
+                lastException = e
+                if (e.errorCode.startsWith("HTTP_4") && e.errorCode != "HTTP_429") {
+                    throw e
+                }
+                if (attempt < MAX_RETRIES - 1) {
+                    val delayMs = (1000L * (1 shl attempt))
+                    Log.w(TAG, "Retry attempt ${attempt + 1} after ${delayMs}ms: ${e.errorCode}")
+                    Thread.sleep(delayMs)
+                }
+            } catch (e: Exception) {
+                lastException = e
+                if (attempt < MAX_RETRIES - 1) {
+                    val delayMs = (1000L * (1 shl attempt))
+                    Log.w(TAG, "Retry attempt ${attempt + 1} after ${delayMs}ms: ${e.message}")
+                    Thread.sleep(delayMs)
+                }
+            }
+        }
+        throw lastException ?: LLMException("RETRY_EXHAUSTED", "All retries failed")
     }
 
     private fun buildRequestBody(
@@ -1032,76 +1388,73 @@ class OpenAIProvider(private val config: ModelConfig) : LLMClient {
         temperature: Float,
         tools: List<ToolDefinition>,
         stream: Boolean
-    ): JSONObject {
-        val body = JSONObject()
-        body.put("model", config.model)
-        body.put("temperature", temperature.toDouble())
-        body.put("stream", stream)
-        if (stream) {
-            body.put("stream_options", JSONObject().put("include_usage", true))
-        }
-
-        val messagesArray = JSONArray()
-        if (systemPrompt.isNotBlank()) {
-            val sysMsg = JSONObject()
-            sysMsg.put("role", "system")
-            sysMsg.put("content", systemPrompt)
-            messagesArray.put(sysMsg)
-        }
-        for (msg in messages) {
-            val msgObj = JSONObject()
-            msgObj.put("role", msg.role)
-            msgObj.put("content", msg.content)
-            messagesArray.put(msgObj)
-        }
-        body.put("messages", messagesArray)
-
-        if (tools.isNotEmpty()) {
-            val toolsArray = JSONArray()
-            for (tool in tools) {
-                val toolObj = JSONObject()
-                toolObj.put("type", "function")
-                val funcObj = JSONObject()
-                funcObj.put("name", tool.name)
-                funcObj.put("description", tool.description)
-                funcObj.put("parameters", JSONObject(tool.parameters))
-                toolObj.put("function", funcObj)
-                toolsArray.put(toolObj)
+    ): String {
+        val body = buildJsonObject {
+            put("model", config.model)
+            put("temperature", temperature.toDouble())
+            put("stream", stream)
+            if (stream) {
+                put("stream_options", buildJsonObject { put("include_usage", true) })
             }
-            body.put("tools", toolsArray)
-        }
 
-        return body
+            put("messages", buildJsonArray {
+                if (systemPrompt.isNotBlank()) {
+                    add(buildJsonObject {
+                        put("role", "system")
+                        put("content", systemPrompt)
+                    })
+                }
+                for (msg in messages) {
+                    add(buildJsonObject {
+                        put("role", msg.role)
+                        put("content", msg.content)
+                    })
+                }
+            })
+
+            if (tools.isNotEmpty()) {
+                put("tools", buildJsonArray {
+                    for (tool in tools) {
+                        add(buildJsonObject {
+                            put("type", "function")
+                            put("function", buildJsonObject {
+                                put("name", tool.name)
+                                put("description", tool.description)
+                                put("parameters", Json.parseToJsonElement(tool.parameters))
+                            })
+                        })
+                    }
+                })
+            }
+        }
+        return body.toString()
     }
 
     private fun parseBlockingResponse(responseText: String): LLMResponse {
-        val json = JSONObject(responseText)
-        val choices = json.optJSONArray("choices")
-        val message = choices?.getJSONObject(0)?.optJSONObject("message")
-        val content = message?.optString("content", "") ?: ""
+        val jsonObj = Json.parseToJsonElement(responseText).jsonObject
+        val choices = jsonObj["choices"]?.jsonArray
+        val message = choices?.get(0)?.jsonObject?.get("message")?.jsonObject
+        val content = message?.get("content")?.jsonPrimitive?.content ?: ""
 
         val toolCalls = mutableListOf<ToolCall>()
-        val tcArray = message?.optJSONArray("tool_calls")
-        if (tcArray != null) {
-            for (i in 0 until tcArray.length()) {
-                val tc = tcArray.getJSONObject(i)
-                val function = tc.optJSONObject("function")
-                toolCalls.add(ToolCall(
-                    id = tc.optString("id", ""),
-                    name = function?.optString("name", "") ?: "",
-                    arguments = function?.optString("arguments", "{}") ?: "{}"
-                ))
-            }
+        message?.get("tool_calls")?.jsonArray?.forEach { tc ->
+            val tcObj = tc.jsonObject
+            val function = tcObj["function"]?.jsonObject
+            toolCalls.add(ToolCall(
+                id = tcObj["id"]?.jsonPrimitive?.content ?: "",
+                name = function?.get("name")?.jsonPrimitive?.content ?: "",
+                arguments = function?.get("arguments")?.jsonPrimitive?.content ?: "{}"
+            ))
         }
 
-        val usage = json.optJSONObject("usage")
+        val usage = jsonObj["usage"]?.jsonObject
         return LLMResponse(
             content = content,
-            inputTokens = usage?.optLong("prompt_tokens", 0) ?: 0,
-            outputTokens = usage?.optLong("completion_tokens", 0) ?: 0,
-            model = json.optString("model", config.model),
+            inputTokens = usage?.get("prompt_tokens")?.jsonPrimitive?.long ?: 0,
+            outputTokens = usage?.get("completion_tokens")?.jsonPrimitive?.long ?: 0,
+            model = jsonObj["model"]?.jsonPrimitive?.content ?: config.model,
             toolCalls = toolCalls,
-            finishReason = choices?.getJSONObject(0)?.optString("finish_reason", "stop") ?: "stop"
+            finishReason = choices?.get(0)?.jsonObject?.get("finish_reason")?.jsonPrimitive?.content ?: "stop"
         )
     }
 }
@@ -1109,527 +1462,59 @@ class OpenAIProvider(private val config: ModelConfig) : LLMClient {
 
 - [ ] **Step 3: Create GrokProvider.kt**
 
-Grok uses OpenAI-compatible API format with a different base URL.
+Grok uses OpenAI-compatible API format with a different base URL. Extends OpenAIProvider.
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/llm/GrokProvider.kt`:
+Create `DollOSAIService/app/src/main/java/org/dollos/ai/llm/GrokProvider.kt`:
 
 ```kotlin
 package org.dollos.ai.llm
 
-import android.util.Log
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
-import java.util.concurrent.atomic.AtomicBoolean
-
-class GrokProvider(private val config: ModelConfig) : LLMClient {
-
-    companion object {
-        private const val TAG = "GrokProvider"
-        private const val BASE_URL = "https://api.x.ai/v1/chat/completions"
-    }
-
-    override val providerType = LLMProviderType.GROK
-    private val cancelled = AtomicBoolean(false)
-    private var currentConnection: HttpURLConnection? = null
-
-    override fun sendBlocking(
-        messages: List<LLMMessage>,
-        systemPrompt: String,
-        temperature: Float,
-        tools: List<ToolDefinition>
-    ): LLMResponse {
-        cancelled.set(false)
-        val body = buildRequestBody(messages, systemPrompt, temperature, tools, stream = false)
-        val conn = openConnection()
-        currentConnection = conn
-
-        try {
-            writeBody(conn, body)
-            val responseCode = conn.responseCode
-            if (responseCode != 200) {
-                val errorBody = conn.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                throw LLMException("HTTP_$responseCode", errorBody)
-            }
-
-            val responseText = conn.inputStream.bufferedReader().readText()
-            return parseBlockingResponse(responseText)
-        } finally {
-            currentConnection = null
-            conn.disconnect()
-        }
-    }
-
-    override fun sendStreaming(
-        messages: List<LLMMessage>,
-        systemPrompt: String,
-        temperature: Float,
-        callback: StreamingCallback,
-        tools: List<ToolDefinition>
-    ) {
-        cancelled.set(false)
-        val body = buildRequestBody(messages, systemPrompt, temperature, tools, stream = true)
-        val conn = openConnection()
-        currentConnection = conn
-
-        try {
-            writeBody(conn, body)
-            val responseCode = conn.responseCode
-            if (responseCode != 200) {
-                val errorBody = conn.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                callback.onError("HTTP_$responseCode", errorBody)
-                return
-            }
-
-            val reader = BufferedReader(InputStreamReader(conn.inputStream))
-            val fullContent = StringBuilder()
-            var inputTokens = 0L
-            var outputTokens = 0L
-            val toolCalls = mutableListOf<ToolCall>()
-            val toolCallArgs = mutableMapOf<Int, StringBuilder>()
-            val toolCallIds = mutableMapOf<Int, String>()
-            val toolCallNames = mutableMapOf<Int, String>()
-
-            var line: String?
-            while (reader.readLine().also { line = it } != null) {
-                if (cancelled.get()) {
-                    callback.onError("CANCELLED", "Request cancelled by user")
-                    return
-                }
-
-                val data = line ?: continue
-                if (!data.startsWith("data: ")) continue
-                val payload = data.substring(6).trim()
-                if (payload == "[DONE]" || payload.isEmpty()) continue
-
-                val chunk = JSONObject(payload)
-                val choices = chunk.optJSONArray("choices")
-                if (choices != null && choices.length() > 0) {
-                    val delta = choices.getJSONObject(0).optJSONObject("delta")
-                    if (delta != null) {
-                        val content = delta.optString("content", "")
-                        if (content.isNotEmpty()) {
-                            fullContent.append(content)
-                            callback.onToken(content)
-                        }
-
-                        val deltaToolCalls = delta.optJSONArray("tool_calls")
-                        if (deltaToolCalls != null) {
-                            for (i in 0 until deltaToolCalls.length()) {
-                                val tc = deltaToolCalls.getJSONObject(i)
-                                val index = tc.optInt("index", 0)
-                                val id = tc.optString("id", "")
-                                val function = tc.optJSONObject("function")
-
-                                if (id.isNotEmpty()) {
-                                    toolCallIds[index] = id
-                                }
-                                if (function != null) {
-                                    val name = function.optString("name", "")
-                                    if (name.isNotEmpty()) {
-                                        toolCallNames[index] = name
-                                    }
-                                    val args = function.optString("arguments", "")
-                                    if (args.isNotEmpty()) {
-                                        toolCallArgs.getOrPut(index) { StringBuilder() }.append(args)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                val usage = chunk.optJSONObject("usage")
-                if (usage != null) {
-                    inputTokens = usage.optLong("prompt_tokens", inputTokens)
-                    outputTokens = usage.optLong("completion_tokens", outputTokens)
-                }
-            }
-
-            for ((index, id) in toolCallIds) {
-                toolCalls.add(ToolCall(
-                    id = id,
-                    name = toolCallNames[index] ?: "",
-                    arguments = toolCallArgs[index]?.toString() ?: "{}"
-                ))
-            }
-
-            val response = LLMResponse(
-                content = fullContent.toString(),
-                inputTokens = inputTokens,
-                outputTokens = outputTokens,
-                model = config.model,
-                toolCalls = toolCalls
-            )
-            callback.onComplete(response)
-        } catch (e: Exception) {
-            if (!cancelled.get()) {
-                Log.e(TAG, "Streaming error", e)
-                callback.onError("STREAM_ERROR", e.message ?: "Unknown streaming error")
-            }
-        } finally {
-            currentConnection = null
-            conn.disconnect()
-        }
-    }
-
-    override fun cancelCurrent() {
-        cancelled.set(true)
-        currentConnection?.disconnect()
-    }
-
-    private fun openConnection(): HttpURLConnection {
-        val url = URL(BASE_URL)
-        val conn = url.openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("Authorization", "Bearer ${config.apiKey}")
-        conn.doOutput = true
-        conn.connectTimeout = 30000
-        conn.readTimeout = 120000
-        return conn
-    }
-
-    private fun writeBody(conn: HttpURLConnection, body: JSONObject) {
-        val writer = OutputStreamWriter(conn.outputStream)
-        writer.write(body.toString())
-        writer.flush()
-        writer.close()
-    }
-
-    private fun buildRequestBody(
-        messages: List<LLMMessage>,
-        systemPrompt: String,
-        temperature: Float,
-        tools: List<ToolDefinition>,
-        stream: Boolean
-    ): JSONObject {
-        val body = JSONObject()
-        body.put("model", config.model)
-        body.put("temperature", temperature.toDouble())
-        body.put("stream", stream)
-        if (stream) {
-            body.put("stream_options", JSONObject().put("include_usage", true))
-        }
-
-        val messagesArray = JSONArray()
-        if (systemPrompt.isNotBlank()) {
-            val sysMsg = JSONObject()
-            sysMsg.put("role", "system")
-            sysMsg.put("content", systemPrompt)
-            messagesArray.put(sysMsg)
-        }
-        for (msg in messages) {
-            val msgObj = JSONObject()
-            msgObj.put("role", msg.role)
-            msgObj.put("content", msg.content)
-            messagesArray.put(msgObj)
-        }
-        body.put("messages", messagesArray)
-
-        if (tools.isNotEmpty()) {
-            val toolsArray = JSONArray()
-            for (tool in tools) {
-                val toolObj = JSONObject()
-                toolObj.put("type", "function")
-                val funcObj = JSONObject()
-                funcObj.put("name", tool.name)
-                funcObj.put("description", tool.description)
-                funcObj.put("parameters", JSONObject(tool.parameters))
-                toolObj.put("function", funcObj)
-                toolsArray.put(toolObj)
-            }
-            body.put("tools", toolsArray)
-        }
-
-        return body
-    }
-
-    private fun parseBlockingResponse(responseText: String): LLMResponse {
-        val json = JSONObject(responseText)
-        val choices = json.optJSONArray("choices")
-        val message = choices?.getJSONObject(0)?.optJSONObject("message")
-        val content = message?.optString("content", "") ?: ""
-
-        val toolCalls = mutableListOf<ToolCall>()
-        val tcArray = message?.optJSONArray("tool_calls")
-        if (tcArray != null) {
-            for (i in 0 until tcArray.length()) {
-                val tc = tcArray.getJSONObject(i)
-                val function = tc.optJSONObject("function")
-                toolCalls.add(ToolCall(
-                    id = tc.optString("id", ""),
-                    name = function?.optString("name", "") ?: "",
-                    arguments = function?.optString("arguments", "{}") ?: "{}"
-                ))
-            }
-        }
-
-        val usage = json.optJSONObject("usage")
-        return LLMResponse(
-            content = content,
-            inputTokens = usage?.optLong("prompt_tokens", 0) ?: 0,
-            outputTokens = usage?.optLong("completion_tokens", 0) ?: 0,
-            model = json.optString("model", config.model),
-            toolCalls = toolCalls,
-            finishReason = choices?.getJSONObject(0)?.optString("finish_reason", "stop") ?: "stop"
-        )
-    }
-}
+class GrokProvider(config: ModelConfig) : OpenAIProvider(
+    config = config,
+    baseUrl = "https://api.x.ai/v1/chat/completions"
+)
 ```
 
 - [ ] **Step 4: Create CustomProvider.kt**
 
 Custom provider uses OpenAI-compatible format with user-configurable base URL.
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/llm/CustomProvider.kt`:
+Create `DollOSAIService/app/src/main/java/org/dollos/ai/llm/CustomProvider.kt`:
 
 ```kotlin
 package org.dollos.ai.llm
 
-import android.util.Log
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
-import java.util.concurrent.atomic.AtomicBoolean
-
-class CustomProvider(private val config: ModelConfig) : LLMClient {
-
-    companion object {
-        private const val TAG = "CustomProvider"
+class CustomProvider(config: ModelConfig) : OpenAIProvider(
+    config = config,
+    baseUrl = if (config.baseUrl.isNotBlank()) {
+        config.baseUrl.trimEnd('/') + "/chat/completions"
+    } else {
+        throw LLMException("CONFIG_ERROR", "Custom provider requires a base URL")
     }
-
-    override val providerType = LLMProviderType.CUSTOM
-    private val cancelled = AtomicBoolean(false)
-    private var currentConnection: HttpURLConnection? = null
-
-    private val effectiveBaseUrl: String
-        get() = if (config.baseUrl.isNotBlank()) {
-            config.baseUrl.trimEnd('/') + "/chat/completions"
-        } else {
-            throw LLMException("CONFIG_ERROR", "Custom provider requires a base URL")
-        }
-
-    override fun sendBlocking(
-        messages: List<LLMMessage>,
-        systemPrompt: String,
-        temperature: Float,
-        tools: List<ToolDefinition>
-    ): LLMResponse {
-        cancelled.set(false)
-        val body = buildRequestBody(messages, systemPrompt, temperature, tools, stream = false)
-        val conn = openConnection()
-        currentConnection = conn
-
-        try {
-            writeBody(conn, body)
-            val responseCode = conn.responseCode
-            if (responseCode != 200) {
-                val errorBody = conn.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                throw LLMException("HTTP_$responseCode", errorBody)
-            }
-
-            val responseText = conn.inputStream.bufferedReader().readText()
-            return parseBlockingResponse(responseText)
-        } finally {
-            currentConnection = null
-            conn.disconnect()
-        }
-    }
-
-    override fun sendStreaming(
-        messages: List<LLMMessage>,
-        systemPrompt: String,
-        temperature: Float,
-        callback: StreamingCallback,
-        tools: List<ToolDefinition>
-    ) {
-        cancelled.set(false)
-        val body = buildRequestBody(messages, systemPrompt, temperature, tools, stream = true)
-        val conn = openConnection()
-        currentConnection = conn
-
-        try {
-            writeBody(conn, body)
-            val responseCode = conn.responseCode
-            if (responseCode != 200) {
-                val errorBody = conn.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                callback.onError("HTTP_$responseCode", errorBody)
-                return
-            }
-
-            val reader = BufferedReader(InputStreamReader(conn.inputStream))
-            val fullContent = StringBuilder()
-            var inputTokens = 0L
-            var outputTokens = 0L
-
-            var line: String?
-            while (reader.readLine().also { line = it } != null) {
-                if (cancelled.get()) {
-                    callback.onError("CANCELLED", "Request cancelled by user")
-                    return
-                }
-
-                val data = line ?: continue
-                if (!data.startsWith("data: ")) continue
-                val payload = data.substring(6).trim()
-                if (payload == "[DONE]" || payload.isEmpty()) continue
-
-                val chunk = JSONObject(payload)
-                val choices = chunk.optJSONArray("choices")
-                if (choices != null && choices.length() > 0) {
-                    val delta = choices.getJSONObject(0).optJSONObject("delta")
-                    if (delta != null) {
-                        val content = delta.optString("content", "")
-                        if (content.isNotEmpty()) {
-                            fullContent.append(content)
-                            callback.onToken(content)
-                        }
-                    }
-                }
-
-                val usage = chunk.optJSONObject("usage")
-                if (usage != null) {
-                    inputTokens = usage.optLong("prompt_tokens", inputTokens)
-                    outputTokens = usage.optLong("completion_tokens", outputTokens)
-                }
-            }
-
-            val response = LLMResponse(
-                content = fullContent.toString(),
-                inputTokens = inputTokens,
-                outputTokens = outputTokens,
-                model = config.model
-            )
-            callback.onComplete(response)
-        } catch (e: Exception) {
-            if (!cancelled.get()) {
-                Log.e(TAG, "Streaming error", e)
-                callback.onError("STREAM_ERROR", e.message ?: "Unknown streaming error")
-            }
-        } finally {
-            currentConnection = null
-            conn.disconnect()
-        }
-    }
-
-    override fun cancelCurrent() {
-        cancelled.set(true)
-        currentConnection?.disconnect()
-    }
-
-    private fun openConnection(): HttpURLConnection {
-        val url = URL(effectiveBaseUrl)
-        val conn = url.openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.setRequestProperty("Content-Type", "application/json")
-        if (config.apiKey.isNotBlank()) {
-            conn.setRequestProperty("Authorization", "Bearer ${config.apiKey}")
-        }
-        conn.doOutput = true
-        conn.connectTimeout = 30000
-        conn.readTimeout = 120000
-        return conn
-    }
-
-    private fun writeBody(conn: HttpURLConnection, body: JSONObject) {
-        val writer = OutputStreamWriter(conn.outputStream)
-        writer.write(body.toString())
-        writer.flush()
-        writer.close()
-    }
-
-    private fun buildRequestBody(
-        messages: List<LLMMessage>,
-        systemPrompt: String,
-        temperature: Float,
-        tools: List<ToolDefinition>,
-        stream: Boolean
-    ): JSONObject {
-        val body = JSONObject()
-        body.put("model", config.model)
-        body.put("temperature", temperature.toDouble())
-        body.put("stream", stream)
-
-        val messagesArray = JSONArray()
-        if (systemPrompt.isNotBlank()) {
-            val sysMsg = JSONObject()
-            sysMsg.put("role", "system")
-            sysMsg.put("content", systemPrompt)
-            messagesArray.put(sysMsg)
-        }
-        for (msg in messages) {
-            val msgObj = JSONObject()
-            msgObj.put("role", msg.role)
-            msgObj.put("content", msg.content)
-            messagesArray.put(msgObj)
-        }
-        body.put("messages", messagesArray)
-
-        if (tools.isNotEmpty()) {
-            val toolsArray = JSONArray()
-            for (tool in tools) {
-                val toolObj = JSONObject()
-                toolObj.put("type", "function")
-                val funcObj = JSONObject()
-                funcObj.put("name", tool.name)
-                funcObj.put("description", tool.description)
-                funcObj.put("parameters", JSONObject(tool.parameters))
-                toolObj.put("function", funcObj)
-                toolsArray.put(toolObj)
-            }
-            body.put("tools", toolsArray)
-        }
-
-        return body
-    }
-
-    private fun parseBlockingResponse(responseText: String): LLMResponse {
-        val json = JSONObject(responseText)
-        val choices = json.optJSONArray("choices")
-        val message = choices?.getJSONObject(0)?.optJSONObject("message")
-        val content = message?.optString("content", "") ?: ""
-
-        val usage = json.optJSONObject("usage")
-        return LLMResponse(
-            content = content,
-            inputTokens = usage?.optLong("prompt_tokens", 0) ?: 0,
-            outputTokens = usage?.optLong("completion_tokens", 0) ?: 0,
-            model = json.optString("model", config.model)
-        )
-    }
-}
+)
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add src/org/dollos/ai/llm/
-git commit -m "feat: add Claude, OpenAI, Grok, and Custom LLM provider implementations"
+cd DollOSAIService
+git add app/src/main/java/org/dollos/ai/llm/
+git commit -m "feat: add Claude, OpenAI, Grok, and Custom LLM provider implementations with OkHttp"
 ```
 
 ---
 
-## Task 6: Personality System
+## Task 7: Personality System
 
 **Goal:** Implement the 5-field personality system (backstory, response directive, dynamism, address, language preference) with SharedPreferences persistence and system prompt construction.
 
 **Files:**
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/personality/PersonalityManager.kt`
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/personality/SystemPromptBuilder.kt`
+- Create: `DollOSAIService/app/src/main/java/org/dollos/ai/personality/PersonalityManager.kt`
+- Create: `DollOSAIService/app/src/main/java/org/dollos/ai/personality/SystemPromptBuilder.kt`
 
 - [ ] **Step 1: Create PersonalityManager.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/personality/PersonalityManager.kt`:
+Create `DollOSAIService/app/src/main/java/org/dollos/ai/personality/PersonalityManager.kt`:
 
 ```kotlin
 package org.dollos.ai.personality
@@ -1699,7 +1584,7 @@ class PersonalityManager(private val prefs: SharedPreferences) {
 
 - [ ] **Step 2: Create SystemPromptBuilder.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/personality/SystemPromptBuilder.kt`:
+Create `DollOSAIService/app/src/main/java/org/dollos/ai/personality/SystemPromptBuilder.kt`:
 
 ```kotlin
 package org.dollos.ai.personality
@@ -1765,36 +1650,35 @@ class SystemPromptBuilder(private val personalityManager: PersonalityManager) {
 - [ ] **Step 3: Commit**
 
 ```bash
-cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add src/org/dollos/ai/personality/
+cd DollOSAIService
+git add app/src/main/java/org/dollos/ai/personality/
 git commit -m "feat: add PersonalityManager with 5-field config and SystemPromptBuilder"
 ```
 
 ---
 
-## Task 7: Usage Tracking and Budget Controls
+## Task 8: Usage Tracking and Budget Controls
 
 **Goal:** Implement token usage tracking with per-call recording, and budget controls with warning threshold and hard limit (daily/monthly periods). Budget violations trigger Android system notifications and can block API calls.
 
 **Files:**
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/usage/UsageTracker.kt`
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/usage/BudgetManager.kt`
+- Create: `DollOSAIService/app/src/main/java/org/dollos/ai/usage/UsageTracker.kt`
+- Create: `DollOSAIService/app/src/main/java/org/dollos/ai/usage/BudgetManager.kt`
 
 - [ ] **Step 1: Create UsageTracker.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/usage/UsageTracker.kt`:
+Create `DollOSAIService/app/src/main/java/org/dollos/ai/usage/UsageTracker.kt`:
 
 ```kotlin
 package org.dollos.ai.usage
 
 import android.content.SharedPreferences
 import android.util.Log
-import org.json.JSONArray
-import org.json.JSONObject
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Locale
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
+@Serializable
 data class UsageRecord(
     val timestamp: Long,
     val inputTokens: Long,
@@ -1804,18 +1688,6 @@ data class UsageRecord(
     val function: String,
     val isForeground: Boolean
 ) {
-    fun toJson(): JSONObject {
-        return JSONObject().apply {
-            put("timestamp", timestamp)
-            put("inputTokens", inputTokens)
-            put("outputTokens", outputTokens)
-            put("model", model)
-            put("provider", provider)
-            put("function", function)
-            put("isForeground", isForeground)
-        }
-    }
-
     val totalTokens: Long get() = inputTokens + outputTokens
 }
 
@@ -1827,6 +1699,7 @@ class UsageTracker(private val prefs: SharedPreferences) {
         private const val MAX_RECORDS = 10000
     }
 
+    private val json = Json { ignoreUnknownKeys = true }
     private val records = mutableListOf<UsageRecord>()
     private val lock = Any()
 
@@ -1870,7 +1743,7 @@ class UsageTracker(private val prefs: SharedPreferences) {
         }
     }
 
-    fun getStats(): JSONObject {
+    fun getStatsJson(): String {
         synchronized(lock) {
             val dailyCutoff = getPeriodCutoff("daily")
             val monthlyCutoff = getPeriodCutoff("monthly")
@@ -1878,81 +1751,73 @@ class UsageTracker(private val prefs: SharedPreferences) {
             val dailyRecords = records.filter { it.timestamp >= dailyCutoff }
             val monthlyRecords = records.filter { it.timestamp >= monthlyCutoff }
 
-            return JSONObject().apply {
-                put("daily", JSONObject().apply {
-                    put("totalTokens", dailyRecords.sumOf { it.totalTokens })
-                    put("inputTokens", dailyRecords.sumOf { it.inputTokens })
-                    put("outputTokens", dailyRecords.sumOf { it.outputTokens })
-                    put("callCount", dailyRecords.size)
-                })
-                put("monthly", JSONObject().apply {
-                    put("totalTokens", monthlyRecords.sumOf { it.totalTokens })
-                    put("inputTokens", monthlyRecords.sumOf { it.inputTokens })
-                    put("outputTokens", monthlyRecords.sumOf { it.outputTokens })
-                    put("callCount", monthlyRecords.size)
-                })
-                put("allTime", JSONObject().apply {
-                    put("totalTokens", records.sumOf { it.totalTokens })
-                    put("inputTokens", records.sumOf { it.inputTokens })
-                    put("outputTokens", records.sumOf { it.outputTokens })
-                    put("callCount", records.size)
-                })
+            return buildString {
+                append("{")
+                append("\"daily\":{")
+                append("\"totalTokens\":${dailyRecords.sumOf { it.totalTokens }},")
+                append("\"inputTokens\":${dailyRecords.sumOf { it.inputTokens }},")
+                append("\"outputTokens\":${dailyRecords.sumOf { it.outputTokens }},")
+                append("\"callCount\":${dailyRecords.size}")
+                append("},")
+                append("\"monthly\":{")
+                append("\"totalTokens\":${monthlyRecords.sumOf { it.totalTokens }},")
+                append("\"inputTokens\":${monthlyRecords.sumOf { it.inputTokens }},")
+                append("\"outputTokens\":${monthlyRecords.sumOf { it.outputTokens }},")
+                append("\"callCount\":${monthlyRecords.size}")
+                append("},")
+                append("\"allTime\":{")
+                append("\"totalTokens\":${records.sumOf { it.totalTokens }},")
+                append("\"inputTokens\":${records.sumOf { it.inputTokens }},")
+                append("\"outputTokens\":${records.sumOf { it.outputTokens }},")
+                append("\"callCount\":${records.size}")
+                append("}")
+                append("}")
             }
         }
     }
 
     private fun getPeriodCutoff(period: String): Long {
-        val cal = Calendar.getInstance()
+        val cal = java.util.Calendar.getInstance()
         when (period) {
             "daily" -> {
-                cal.set(Calendar.HOUR_OF_DAY, 0)
-                cal.set(Calendar.MINUTE, 0)
-                cal.set(Calendar.SECOND, 0)
-                cal.set(Calendar.MILLISECOND, 0)
+                cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+                cal.set(java.util.Calendar.MINUTE, 0)
+                cal.set(java.util.Calendar.SECOND, 0)
+                cal.set(java.util.Calendar.MILLISECOND, 0)
             }
             "monthly" -> {
-                cal.set(Calendar.DAY_OF_MONTH, 1)
-                cal.set(Calendar.HOUR_OF_DAY, 0)
-                cal.set(Calendar.MINUTE, 0)
-                cal.set(Calendar.SECOND, 0)
-                cal.set(Calendar.MILLISECOND, 0)
+                cal.set(java.util.Calendar.DAY_OF_MONTH, 1)
+                cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+                cal.set(java.util.Calendar.MINUTE, 0)
+                cal.set(java.util.Calendar.SECOND, 0)
+                cal.set(java.util.Calendar.MILLISECOND, 0)
             }
         }
         return cal.timeInMillis
     }
 
     private fun loadRecords() {
-        val json = prefs.getString(KEY_USAGE_RECORDS, "[]") ?: "[]"
-        val arr = JSONArray(json)
-        records.clear()
-        for (i in 0 until arr.length()) {
-            val obj = arr.getJSONObject(i)
-            records.add(UsageRecord(
-                timestamp = obj.optLong("timestamp", 0),
-                inputTokens = obj.optLong("inputTokens", 0),
-                outputTokens = obj.optLong("outputTokens", 0),
-                model = obj.optString("model", ""),
-                provider = obj.optString("provider", ""),
-                function = obj.optString("function", ""),
-                isForeground = obj.optBoolean("isForeground", true)
-            ))
+        val data = prefs.getString(KEY_USAGE_RECORDS, null) ?: return
+        try {
+            val loaded: List<UsageRecord> = json.decodeFromString(data)
+            records.clear()
+            records.addAll(loaded)
+            Log.i(TAG, "Loaded ${records.size} usage records")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load usage records", e)
         }
-        Log.i(TAG, "Loaded ${records.size} usage records")
     }
 
     private fun saveRecords() {
-        val arr = JSONArray()
-        for (record in records) {
-            arr.put(record.toJson())
-        }
-        prefs.edit().putString(KEY_USAGE_RECORDS, arr.toString()).apply()
+        val data = json.encodeToString(records.toList())
+        prefs.edit().putString(KEY_USAGE_RECORDS, data).apply()
     }
 }
 ```
 
 - [ ] **Step 2: Create BudgetManager.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/usage/BudgetManager.kt`:
+Create `DollOSAIService/app/src/main/java/org/dollos/ai/usage/BudgetManager.kt`:
 
 ```kotlin
 package org.dollos.ai.usage
@@ -2070,23 +1935,23 @@ class BudgetManager(
 - [ ] **Step 3: Commit**
 
 ```bash
-cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add src/org/dollos/ai/usage/
+cd DollOSAIService
+git add app/src/main/java/org/dollos/ai/usage/
 git commit -m "feat: add UsageTracker and BudgetManager with warning/hard limit controls"
 ```
 
 ---
 
-## Task 8: AIDL Service Implementation
+## Task 9: AIDL Service Implementation
 
-**Goal:** Implement the full `IDollOSAIService.Stub` with all AIDL methods. This ties together the LLM client, personality manager, usage tracker, budget manager, and DollOSService delegation. Includes pauseAll() with 3s synchronous blocking, callback management, and error notification.
+**Goal:** Implement the full `IDollOSAIService.Stub` with all AIDL methods. This ties together the LLM client, personality manager, usage tracker, budget manager, and DollOSService delegation. Includes pauseAll() with 3s synchronous blocking, callback management, tool call handling with confirmation flow (pending map, 60s timeout), and error notification.
 
 **Files:**
-- Create: `packages/apps/DollOSAIService/src/org/dollos/ai/DollOSAIServiceImpl.kt`
+- Create: `DollOSAIService/app/src/main/java/org/dollos/ai/DollOSAIServiceImpl.kt`
 
 - [ ] **Step 1: Create DollOSAIServiceImpl.kt**
 
-Create `packages/apps/DollOSAIService/src/org/dollos/ai/DollOSAIServiceImpl.kt`:
+Create `DollOSAIService/app/src/main/java/org/dollos/ai/DollOSAIServiceImpl.kt`:
 
 ```kotlin
 package org.dollos.ai
@@ -2097,6 +1962,10 @@ import android.os.ParcelFileDescriptor
 import android.os.RemoteCallbackList
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.dollos.ai.llm.ClaudeProvider
 import org.dollos.ai.llm.CustomProvider
 import org.dollos.ai.llm.GrokProvider
@@ -2114,8 +1983,7 @@ import org.dollos.ai.personality.PersonalityManager
 import org.dollos.ai.personality.SystemPromptBuilder
 import org.dollos.ai.usage.BudgetManager
 import org.dollos.ai.usage.UsageTracker
-import org.json.JSONArray
-import org.json.JSONObject
+import org.dollos.service.IDollOSService
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
@@ -2136,6 +2004,7 @@ class DollOSAIServiceImpl(private val service: DollOSAIService) : IDollOSAIServi
         private const val KEY_BG_MODEL = "bg_model"
         private const val KEY_BG_BASE_URL = "bg_base_url"
         private const val PAUSE_TIMEOUT_MS = 3000L
+        private const val CONFIRM_TIMEOUT_MS = 60_000L
     }
 
     private val callbacks = RemoteCallbackList<IDollOSAICallback>()
@@ -2158,6 +2027,13 @@ class DollOSAIServiceImpl(private val service: DollOSAIService) : IDollOSAIServi
         var tokenUsage: Long = 0,
         var status: String = "RUNNING"
     )
+
+    private data class PendingAction(
+        val toolCall: ToolCall,
+        val timeoutRunnable: Runnable
+    )
+    private val pendingConfirmations = ConcurrentHashMap<String, PendingAction>()
+    private val confirmTimeoutHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     init {
         initForegroundClient()
@@ -2389,7 +2265,7 @@ class DollOSAIServiceImpl(private val service: DollOSAIService) : IDollOSAIServi
     // --- Usage ---
 
     override fun getUsageStats(): String {
-        return usageTracker.getStats().toString()
+        return usageTracker.getStatsJson()
     }
 
     override fun setWarningThreshold(tokens: Long, period: String?) {
@@ -2400,34 +2276,57 @@ class DollOSAIServiceImpl(private val service: DollOSAIService) : IDollOSAIServi
         budgetManager.setHardLimit(tokens, period ?: "daily")
     }
 
+    // --- Agent confirmation ---
+
+    override fun confirmAction(actionId: String?, approved: Boolean) {
+        if (actionId == null) return
+
+        val pending = pendingConfirmations.remove(actionId)
+        if (pending == null) {
+            Log.w(TAG, "confirmAction called for unknown or expired actionId: $actionId")
+            return
+        }
+        confirmTimeoutHandler.removeCallbacks(pending.timeoutRunnable)
+
+        if (approved) {
+            val dollOSService = service.dollOSService
+            if (dollOSService == null) {
+                broadcastActionExecuted(actionId, false, "DollOSService not connected")
+                return
+            }
+            executor.submit {
+                executeToolCall(dollOSService, pending.toolCall)
+            }
+        } else {
+            broadcastActionExecuted(actionId, false, "Action denied by user")
+            Log.i(TAG, "Action denied by user: ${pending.toolCall.name}")
+        }
+    }
+
     // --- Task Manager ---
 
     override fun getActiveTasks(): String {
-        val arr = JSONArray()
-        for (task in activeTasks.values) {
-            arr.put(JSONObject().apply {
-                put("id", task.id)
-                put("name", task.name)
-                put("description", task.description)
-                put("startTime", task.startTime)
-                put("tokenUsage", task.tokenUsage)
-                put("estimatedCost", 0.0)
-                put("conversationContext", "")
-                put("status", task.status)
-            })
+        val tasks = activeTasks.values.map { task ->
+            buildString {
+                append("{")
+                append("\"id\":\"${task.id}\",")
+                append("\"name\":\"${task.name}\",")
+                append("\"description\":\"${task.description}\",")
+                append("\"startTime\":${task.startTime},")
+                append("\"tokenUsage\":${task.tokenUsage},")
+                append("\"estimatedCost\":0.0,")
+                append("\"conversationContext\":\"\",")
+                append("\"status\":\"${task.status}\"")
+                append("}")
+            }
         }
-        return arr.toString()
+        return "[${tasks.joinToString(",")}]"
     }
 
     override fun cancelTask(taskId: String?) {
         if (taskId == null) return
         activeTasks.remove(taskId)
         Log.i(TAG, "Task cancelled: $taskId")
-    }
-
-    override fun confirmAction(actionId: String?, approved: Boolean) {
-        if (actionId == null) return
-        confirmAction(actionId, approved)
     }
 
     // --- Internal helpers ---
@@ -2474,14 +2373,15 @@ class DollOSAIServiceImpl(private val service: DollOSAIService) : IDollOSAIServi
             val actionsJson = dollOSService.availableActions
             if (actionsJson.isNullOrBlank()) return emptyList()
 
-            val arr = JSONArray(actionsJson)
+            val arr = Json.parseToJsonElement(actionsJson).jsonArray
             val tools = mutableListOf<ToolDefinition>()
-            for (i in 0 until arr.length()) {
-                val action = arr.getJSONObject(i)
+            for (element in arr) {
+                val action = element.jsonObject
                 tools.add(ToolDefinition(
-                    name = action.optString("id", ""),
-                    description = action.optString("description", ""),
-                    parameters = """{"type":"object","properties":{},"required":[]}"""
+                    name = action["id"]?.jsonPrimitive?.content ?: "",
+                    description = action["description"]?.jsonPrimitive?.content ?: "",
+                    parameters = action["parameters"]?.toString()
+                        ?: """{"type":"object","properties":{},"required":[]}"""
                 ))
             }
             return tools
@@ -2490,15 +2390,6 @@ class DollOSAIServiceImpl(private val service: DollOSAIService) : IDollOSAIServi
             return emptyList()
         }
     }
-
-    // Pending confirmations: actionId -> PendingAction
-    private data class PendingAction(
-        val toolCall: ToolCall,
-        val timeoutRunnable: Runnable
-    )
-    private val pendingConfirmations = ConcurrentHashMap<String, PendingAction>()
-    private val confirmTimeoutHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private val CONFIRM_TIMEOUT_MS = 60_000L
 
     private fun handleToolCalls(toolCalls: List<ToolCall>) {
         val dollOSService = service.dollOSService
@@ -2512,10 +2403,12 @@ class DollOSAIServiceImpl(private val service: DollOSAIService) : IDollOSAIServi
         try {
             val actionsJson = dollOSService.availableActions
             if (!actionsJson.isNullOrBlank()) {
-                val arr = JSONArray(actionsJson)
-                for (i in 0 until arr.length()) {
-                    val action = arr.getJSONObject(i)
-                    confirmMap[action.optString("id", "")] = action.optBoolean("confirmRequired", true)
+                val arr = Json.parseToJsonElement(actionsJson).jsonArray
+                for (element in arr) {
+                    val action = element.jsonObject
+                    val id = action["id"]?.jsonPrimitive?.content ?: ""
+                    val confirm = action["confirmRequired"]?.jsonPrimitive?.content?.toBoolean() ?: true
+                    confirmMap[id] = confirm
                 }
             }
         } catch (e: Exception) {
@@ -2526,7 +2419,6 @@ class DollOSAIServiceImpl(private val service: DollOSAIService) : IDollOSAIServi
             val needsConfirm = confirmMap.getOrDefault(toolCall.name, true)
 
             if (needsConfirm) {
-                // Add to pending confirmations, broadcast confirm request, wait for user
                 val timeoutRunnable = Runnable {
                     val removed = pendingConfirmations.remove(toolCall.id)
                     if (removed != null) {
@@ -2539,7 +2431,6 @@ class DollOSAIServiceImpl(private val service: DollOSAIService) : IDollOSAIServi
                 broadcastActionConfirm(toolCall.id, toolCall.name, "Execute ${toolCall.name}?")
                 Log.i(TAG, "Awaiting confirmation for action: ${toolCall.name} (id=${toolCall.id})")
             } else {
-                // Execute immediately -- no confirmation needed
                 executor.submit {
                     executeToolCall(dollOSService, toolCall)
                 }
@@ -2547,35 +2438,12 @@ class DollOSAIServiceImpl(private val service: DollOSAIService) : IDollOSAIServi
         }
     }
 
-    fun confirmAction(actionId: String, approved: Boolean) {
-        val pending = pendingConfirmations.remove(actionId)
-        if (pending == null) {
-            Log.w(TAG, "confirmAction called for unknown or expired actionId: $actionId")
-            return
-        }
-        confirmTimeoutHandler.removeCallbacks(pending.timeoutRunnable)
-
-        if (approved) {
-            val dollOSService = service.dollOSService
-            if (dollOSService == null) {
-                broadcastActionExecuted(actionId, false, "DollOSService not connected")
-                return
-            }
-            executor.submit {
-                executeToolCall(dollOSService, pending.toolCall)
-            }
-        } else {
-            broadcastActionExecuted(actionId, false, "Action denied by user")
-            Log.i(TAG, "Action denied by user: ${pending.toolCall.name}")
-        }
-    }
-
     private fun executeToolCall(dollOSService: IDollOSService, toolCall: ToolCall) {
         try {
             val resultJson = dollOSService.executeSystemAction(toolCall.name, toolCall.arguments)
-            val result = JSONObject(resultJson)
-            val success = result.optBoolean("success", false)
-            val message = result.optString("message", "")
+            val result = Json.parseToJsonElement(resultJson).jsonObject
+            val success = result["success"]?.jsonPrimitive?.content?.toBoolean() ?: false
+            val message = result["message"]?.jsonPrimitive?.content ?: ""
 
             broadcastActionExecuted(toolCall.id, success, message)
             Log.i(TAG, "Tool call executed: ${toolCall.name} -> success=$success")
@@ -2584,6 +2452,8 @@ class DollOSAIServiceImpl(private val service: DollOSAIService) : IDollOSAIServi
             broadcastActionExecuted(toolCall.id, false, e.message ?: "Execution failed")
         }
     }
+
+    // --- Broadcast helpers ---
 
     private fun broadcastToken(token: String) {
         val n = callbacks.beginBroadcast()
@@ -2664,7 +2534,7 @@ class DollOSAIServiceImpl(private val service: DollOSAIService) : IDollOSAIServi
         val nm = DollOSAIApp.instance.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val notification = NotificationCompat.Builder(DollOSAIApp.instance, DollOSAIApp.NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setContentTitle("AI Error: $errorCode")
+            .setContentTitle("AI Service Error: $errorCode")
             .setContentText(message)
             .setStyle(NotificationCompat.BigTextStyle().bigText(message))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -2678,1048 +2548,370 @@ class DollOSAIServiceImpl(private val service: DollOSAIService) : IDollOSAIServi
 - [ ] **Step 2: Commit**
 
 ```bash
-cd ~/Desktop/DollOS-build/packages/apps/DollOSAIService
-git add src/org/dollos/ai/DollOSAIServiceImpl.kt
-git commit -m "feat: add full DollOSAIServiceImpl with LLM, personality, usage, and task management"
+cd DollOSAIService
+git add app/src/main/java/org/dollos/ai/DollOSAIServiceImpl.kt
+git commit -m "feat: add DollOSAIServiceImpl with full AIDL implementation, tool calling, and budget controls"
 ```
 
 ---
 
-## Task 9: OOBE Migration -- SetupWizard Binds to DollOSAIService
+## Task 10: AOSP Integration (Prebuilt APK)
 
-**Goal:** Update DollOSSetupWizard to bind to DollOSAIService for API key and personality pages, while keeping DollOSService binding for GMS page. Update ApiKeyPage to call `setForegroundModel` on DollOSAIService. Update PersonalityPage to use the full 5-field personality system.
+**Goal:** Create the AOSP integration for DollOSAIService as a prebuilt APK import. This includes the `android_app_import` in `external/DollOSAIService/`, privapp permissions, and additions to `dollos_bluejay.mk`.
 
 **Files:**
-- Modify: `packages/apps/DollOSSetupWizard/Android.bp`
-- Modify: `packages/apps/DollOSSetupWizard/src/org/dollos/setup/SetupWizardActivity.kt`
-- Modify: `packages/apps/DollOSSetupWizard/src/org/dollos/setup/ApiKeyPage.kt`
-- Modify: `packages/apps/DollOSSetupWizard/src/org/dollos/setup/PersonalityPage.kt`
-- Modify: `packages/apps/DollOSSetupWizard/res/layout/page_personality.xml`
-
-- [ ] **Step 1: Update Android.bp to add dollos-ai-aidl dependency**
-
-In `packages/apps/DollOSSetupWizard/Android.bp`, add `"dollos-ai-aidl"` to `static_libs`:
-
-```
-android_app {
-    name: "DollOSSetupWizard",
-    srcs: [
-        "src/**/*.kt",
-    ],
-    resource_dirs: ["res"],
-    platform_apis: true,
-    privileged: true,
-    certificate: "platform",
-    overrides: ["SetupWizard2", "Provision", "Auditor"],
-    static_libs: [
-        "androidx.core_core-ktx",
-        "androidx.appcompat_appcompat",
-        "androidx.viewpager2_viewpager2",
-        "com.google.android.material_material",
-        "dollos-service-aidl",
-        "dollos-ai-aidl",
-    ],
-    kotlincflags: ["-Xjvm-default=all"],
-}
-```
-
-- [ ] **Step 2: Update SetupWizardActivity.kt to bind to DollOSAIService**
-
-Replace the full content of `packages/apps/DollOSSetupWizard/src/org/dollos/setup/SetupWizardActivity.kt`:
-
-```kotlin
-package org.dollos.setup
-
-import android.content.ComponentName
-import android.content.Context
-import android.content.Intent
-import android.content.ServiceConnection
-import android.content.pm.PackageManager
-import android.os.Bundle
-import android.os.IBinder
-import android.provider.Settings
-import android.view.View
-import android.widget.ImageView
-import android.widget.LinearLayout
-import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
-import androidx.fragment.app.Fragment
-import androidx.viewpager2.adapter.FragmentStateAdapter
-import androidx.viewpager2.widget.ViewPager2
-import org.dollos.ai.IDollOSAIService
-import org.dollos.service.IDollOSService
-
-class SetupWizardActivity : AppCompatActivity() {
-
-    private val pageKeys = listOf(
-        "welcome", "wifi", "gms", "model_download",
-        "api_key", "personality", "voice", "complete"
-    )
-
-    private val skippablePages = setOf("model_download", "api_key")
-    private val skipTargets = mapOf(
-        "api_key" to "voice"
-    )
-
-    var dollOSService: IDollOSService? = null
-        private set
-    var dollOSAIService: IDollOSAIService? = null
-        private set
-
-    private var isBoundToService = false
-    private var isBoundToAIService = false
-
-    private lateinit var viewPager: ViewPager2
-    private lateinit var btnBack: TextView
-    private lateinit var btnNext: TextView
-    private lateinit var btnSkip: TextView
-    private lateinit var dotContainer: LinearLayout
-    private val dots = mutableListOf<ImageView>()
-
-    private val serviceConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            dollOSService = IDollOSService.Stub.asInterface(service)
-        }
-        override fun onServiceDisconnected(name: ComponentName?) {
-            dollOSService = null
-        }
-    }
-
-    private val aiServiceConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            dollOSAIService = IDollOSAIService.Stub.asInterface(service)
-        }
-        override fun onServiceDisconnected(name: ComponentName?) {
-            dollOSAIService = null
-        }
-    }
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_setup_wizard)
-
-        // Bind to DollOSService (for GMS page)
-        val serviceIntent = Intent("org.dollos.service.IDollOSService")
-        serviceIntent.setPackage("org.dollos.service")
-        isBoundToService = bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
-
-        // Bind to DollOSAIService (for API key + personality pages)
-        val aiServiceIntent = Intent("org.dollos.ai.IDollOSAIService")
-        aiServiceIntent.setPackage("org.dollos.ai")
-        isBoundToAIService = bindService(aiServiceIntent, aiServiceConnection, Context.BIND_AUTO_CREATE)
-
-        viewPager = findViewById(R.id.view_pager)
-        btnBack = findViewById(R.id.btn_back)
-        btnNext = findViewById(R.id.btn_next)
-        btnSkip = findViewById(R.id.btn_skip)
-        dotContainer = findViewById(R.id.dot_container)
-
-        viewPager.adapter = SetupPagerAdapter(this)
-        viewPager.isUserInputEnabled = false
-
-        setupDots()
-        updateUI(0)
-
-        viewPager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
-            override fun onPageSelected(position: Int) {
-                updateUI(position)
-            }
-        })
-
-        btnNext.setOnClickListener {
-            val current = viewPager.currentItem
-            if (current < pageKeys.size - 1) {
-                val fragment = supportFragmentManager.findFragmentByTag("f${current}")
-                if (fragment is SetupPage) {
-                    fragment.onNext()
-                }
-                viewPager.setCurrentItem(current + 1, true)
-            } else {
-                finishSetup()
-            }
-        }
-
-        btnBack.setOnClickListener {
-            val current = viewPager.currentItem
-            if (current > 0) {
-                viewPager.setCurrentItem(current - 1, true)
-            }
-        }
-
-        btnSkip.setOnClickListener {
-            val current = viewPager.currentItem
-            val currentKey = pageKeys[current]
-            val targetKey = skipTargets[currentKey]
-            if (targetKey != null) {
-                viewPager.setCurrentItem(pageKeys.indexOf(targetKey), true)
-            } else {
-                viewPager.setCurrentItem(current + 1, true)
-            }
-        }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        if (isBoundToService) {
-            unbindService(serviceConnection)
-            isBoundToService = false
-        }
-        if (isBoundToAIService) {
-            unbindService(aiServiceConnection)
-            isBoundToAIService = false
-        }
-    }
-
-    fun getPageIndex(key: String): Int = pageKeys.indexOf(key)
-
-    fun navigateTo(pageKey: String) {
-        val index = pageKeys.indexOf(pageKey)
-        if (index >= 0) {
-            viewPager.setCurrentItem(index, true)
-        }
-    }
-
-    private fun setupDots() {
-        dotContainer.removeAllViews()
-        dots.clear()
-        for (i in pageKeys.indices) {
-            val dot = ImageView(this)
-            val params = LinearLayout.LayoutParams(24, 24)
-            params.marginStart = if (i == 0) 0 else 12
-            dot.layoutParams = params
-            dot.setImageResource(R.drawable.dot_indicator)
-            dotContainer.addView(dot)
-            dots.add(dot)
-        }
-    }
-
-    private fun updateUI(position: Int) {
-        for (i in dots.indices) {
-            dots[i].setImageResource(
-                if (i == position) R.drawable.dot_indicator_active
-                else R.drawable.dot_indicator
-            )
-        }
-
-        btnBack.visibility = if (position > 0) View.VISIBLE else View.GONE
-
-        val currentKey = pageKeys[position]
-        btnSkip.visibility = if (currentKey in skippablePages) View.VISIBLE else View.GONE
-
-        btnNext.text = if (position == pageKeys.size - 1) "Get Started" else "Continue"
-    }
-
-    private fun finishSetup() {
-        Settings.Global.putInt(contentResolver, Settings.Global.DEVICE_PROVISIONED, 1)
-        Settings.Secure.putInt(contentResolver, Settings.Secure.USER_SETUP_COMPLETE, 1)
-
-        packageManager.setComponentEnabledSetting(
-            ComponentName(this, SetupWizardActivity::class.java),
-            PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
-            PackageManager.DONT_KILL_APP
-        )
-
-        val intent = Intent(Intent.ACTION_MAIN)
-        intent.addCategory(Intent.CATEGORY_HOME)
-        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        startActivity(intent)
-        finish()
-    }
-
-    private inner class SetupPagerAdapter(activity: AppCompatActivity) : FragmentStateAdapter(activity) {
-        override fun getItemCount(): Int = pageKeys.size
-        override fun createFragment(position: Int): Fragment {
-            return when (pageKeys[position]) {
-                "welcome" -> WelcomePage()
-                "wifi" -> WifiPage()
-                "gms" -> GmsPage()
-                "model_download" -> ModelDownloadPage()
-                "api_key" -> ApiKeyPage()
-                "personality" -> PersonalityPage()
-                "voice" -> VoicePage()
-                "complete" -> CompletePage()
-                else -> WelcomePage()
-            }
-        }
-    }
-}
-
-interface SetupPage {
-    fun onNext()
-}
-```
-
-- [ ] **Step 3: Update ApiKeyPage.kt to use DollOSAIService**
-
-Replace the full content of `packages/apps/DollOSSetupWizard/src/org/dollos/setup/ApiKeyPage.kt`:
-
-```kotlin
-package org.dollos.setup
-
-import android.os.Bundle
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
-import android.widget.ArrayAdapter
-import android.widget.EditText
-import android.widget.Spinner
-import android.widget.TextView
-import androidx.fragment.app.Fragment
-
-class ApiKeyPage : Fragment(), SetupPage {
-
-    private lateinit var providerSpinner: Spinner
-    private lateinit var apiKeyInput: EditText
-    private lateinit var modelInput: EditText
-
-    private val providers = listOf("Claude", "Grok", "OpenAI", "Custom")
-
-    override fun onCreateView(
-        inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
-    ): View {
-        val view = inflater.inflate(R.layout.page_api_key, container, false)
-        view.findViewById<TextView>(R.id.title).text = "AI Configuration"
-        view.findViewById<TextView>(R.id.description).text =
-            "Connect your AI provider.\nYou can configure this later in Settings."
-
-        providerSpinner = view.findViewById(R.id.spinner_provider)
-        apiKeyInput = view.findViewById(R.id.input_api_key)
-        modelInput = view.findViewById(R.id.input_model)
-
-        val adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_dropdown_item, providers)
-        providerSpinner.adapter = adapter
-
-        return view
-    }
-
-    override fun onNext() {
-        val provider = providerSpinner.selectedItem?.toString() ?: ""
-        val apiKey = apiKeyInput.text?.toString() ?: ""
-        val model = modelInput.text?.toString() ?: ""
-        if (provider.isNotBlank() && apiKey.isNotBlank()) {
-            val aiService = (activity as? SetupWizardActivity)?.dollOSAIService
-            aiService?.setForegroundModel(provider, apiKey, model)
-        }
-    }
-}
-```
-
-- [ ] **Step 4: Update page_api_key.xml to add model input**
-
-Replace the full content of `packages/apps/DollOSSetupWizard/res/layout/page_api_key.xml`:
-
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:fillViewport="true">
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:paddingLeft="40dp"
-        android:paddingRight="40dp"
-        android:paddingTop="120dp">
-
-        <TextView
-            android:id="@+id/title"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            style="@style/SetupTitle" />
-
-        <TextView
-            android:id="@+id/description"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:gravity="center"
-            android:layout_gravity="center_horizontal"
-            style="@style/SetupSubtitle" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="40dp"
-            android:orientation="vertical"
-            style="@style/SetupCard">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Provider"
-                android:textSize="13sp"
-                android:textColor="?android:attr/textColorSecondary"
-                android:layout_marginBottom="8dp" />
-
-            <Spinner
-                android:id="@+id/spinner_provider"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:background="@android:color/transparent" />
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider_light"
-                android:layout_marginTop="8dp"
-                android:layout_marginBottom="16dp" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="API Key"
-                android:textSize="13sp"
-                android:textColor="?android:attr/textColorSecondary"
-                android:layout_marginBottom="8dp" />
-
-            <EditText
-                android:id="@+id/input_api_key"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:inputType="textPassword"
-                android:hint="Enter your API key"
-                android:background="@android:color/transparent"
-                android:textSize="16sp" />
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider_light"
-                android:layout_marginTop="8dp"
-                android:layout_marginBottom="16dp" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Model"
-                android:textSize="13sp"
-                android:textColor="?android:attr/textColorSecondary"
-                android:layout_marginBottom="8dp" />
-
-            <EditText
-                android:id="@+id/input_model"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:inputType="text"
-                android:hint="e.g., claude-sonnet-4-20250514"
-                android:background="@android:color/transparent"
-                android:textSize="16sp" />
-
-        </LinearLayout>
-
-    </LinearLayout>
-</ScrollView>
-```
-
-- [ ] **Step 5: Update PersonalityPage.kt to use 5-field personality via DollOSAIService**
-
-Replace the full content of `packages/apps/DollOSSetupWizard/src/org/dollos/setup/PersonalityPage.kt`:
-
-```kotlin
-package org.dollos.setup
-
-import android.os.Bundle
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
-import android.widget.EditText
-import android.widget.SeekBar
-import android.widget.Spinner
-import android.widget.ArrayAdapter
-import android.widget.TextView
-import androidx.fragment.app.Fragment
-
-class PersonalityPage : Fragment(), SetupPage {
-
-    private lateinit var backstoryInput: EditText
-    private lateinit var directiveInput: EditText
-    private lateinit var dynamismSeekBar: SeekBar
-    private lateinit var dynamismLabel: TextView
-    private lateinit var addressInput: EditText
-    private lateinit var languageSpinner: Spinner
-
-    private val languages = listOf(
-        "English", "Japanese", "Traditional Chinese", "Simplified Chinese",
-        "Korean", "Spanish", "French", "German"
-    )
-
-    override fun onCreateView(
-        inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
-    ): View {
-        val view = inflater.inflate(R.layout.page_personality, container, false)
-        view.findViewById<TextView>(R.id.title).text = "Meet Your AI"
-        view.findViewById<TextView>(R.id.description).text =
-            "Configure your AI companion's personality.\nAll fields are optional."
-
-        backstoryInput = view.findViewById(R.id.input_backstory)
-        directiveInput = view.findViewById(R.id.input_directive)
-        dynamismSeekBar = view.findViewById(R.id.seekbar_dynamism)
-        dynamismLabel = view.findViewById(R.id.label_dynamism_value)
-        addressInput = view.findViewById(R.id.input_address)
-        languageSpinner = view.findViewById(R.id.spinner_language)
-
-        val adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_dropdown_item, languages)
-        languageSpinner.adapter = adapter
-
-        dynamismSeekBar.max = 100
-        dynamismSeekBar.progress = 50
-        dynamismLabel.text = "0.50"
-        dynamismSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                val value = progress / 100.0f
-                dynamismLabel.text = String.format("%.2f", value)
-            }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-        })
-
-        return view
-    }
-
-    override fun onNext() {
-        val aiService = (activity as? SetupWizardActivity)?.dollOSAIService ?: return
-
-        val backstory = backstoryInput.text?.toString() ?: ""
-        if (backstory.isNotBlank()) {
-            aiService.setBackstory(backstory)
-        }
-
-        val directive = directiveInput.text?.toString() ?: ""
-        if (directive.isNotBlank()) {
-            aiService.setResponseDirective(directive)
-        }
-
-        val dynamism = dynamismSeekBar.progress / 100.0f
-        aiService.setDynamism(dynamism)
-
-        val address = addressInput.text?.toString() ?: ""
-        if (address.isNotBlank()) {
-            aiService.setAddress(address)
-        }
-
-        val language = languageSpinner.selectedItem?.toString() ?: ""
-        if (language.isNotBlank()) {
-            aiService.setLanguagePreference(language)
-        }
-    }
-}
-```
-
-- [ ] **Step 6: Update page_personality.xml for 5-field layout**
-
-Replace the full content of `packages/apps/DollOSSetupWizard/res/layout/page_personality.xml`:
-
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:fillViewport="true">
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:paddingLeft="40dp"
-        android:paddingRight="40dp"
-        android:paddingTop="80dp"
-        android:paddingBottom="40dp">
-
-        <TextView
-            android:id="@+id/title"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            style="@style/SetupTitle" />
-
-        <TextView
-            android:id="@+id/description"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:gravity="center"
-            android:layout_gravity="center_horizontal"
-            style="@style/SetupSubtitle" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="32dp"
-            android:orientation="vertical"
-            style="@style/SetupCard">
-
-            <!-- Backstory -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Backstory"
-                android:textSize="13sp"
-                android:textColor="?android:attr/textColorSecondary"
-                android:layout_marginBottom="4dp" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Your AI's background and personality (2500 chars max)"
-                android:textSize="11sp"
-                android:textColor="?android:attr/textColorTertiary"
-                android:layout_marginBottom="8dp" />
-
-            <EditText
-                android:id="@+id/input_backstory"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="80dp"
-                android:hint="Describe your AI's personality, background, motivations..."
-                android:background="@android:color/transparent"
-                android:textSize="15sp"
-                android:inputType="textMultiLine"
-                android:gravity="top"
-                android:maxLength="2500" />
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider_light"
-                android:layout_marginTop="8dp"
-                android:layout_marginBottom="16dp" />
-
-            <!-- Response Directive -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Response Directive"
-                android:textSize="13sp"
-                android:textColor="?android:attr/textColorSecondary"
-                android:layout_marginBottom="4dp" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Forced tone and style (150 chars max, strongest influence)"
-                android:textSize="11sp"
-                android:textColor="?android:attr/textColorTertiary"
-                android:layout_marginBottom="8dp" />
-
-            <EditText
-                android:id="@+id/input_directive"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:hint="e.g., Always be concise and witty"
-                android:background="@android:color/transparent"
-                android:textSize="15sp"
-                android:inputType="text"
-                android:maxLength="150" />
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider_light"
-                android:layout_marginTop="8dp"
-                android:layout_marginBottom="16dp" />
-
-            <!-- Dynamism -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical">
-
-                <TextView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Dynamism"
-                    android:textSize="13sp"
-                    android:textColor="?android:attr/textColorSecondary" />
-
-                <TextView
-                    android:id="@+id/label_dynamism_value"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="0.50"
-                    android:textSize="13sp"
-                    android:textColor="?android:attr/textColorSecondary" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:layout_marginTop="4dp">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Stable"
-                    android:textSize="11sp"
-                    android:textColor="?android:attr/textColorTertiary" />
-
-                <SeekBar
-                    android:id="@+id/seekbar_dynamism"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_marginLeft="8dp"
-                    android:layout_marginRight="8dp" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Creative"
-                    android:textSize="11sp"
-                    android:textColor="?android:attr/textColorTertiary" />
-            </LinearLayout>
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider_light"
-                android:layout_marginTop="12dp"
-                android:layout_marginBottom="16dp" />
-
-            <!-- Address -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="How should the AI address you?"
-                android:textSize="13sp"
-                android:textColor="?android:attr/textColorSecondary"
-                android:layout_marginBottom="8dp" />
-
-            <EditText
-                android:id="@+id/input_address"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:hint="Name, nickname, or honorific"
-                android:background="@android:color/transparent"
-                android:textSize="15sp"
-                android:inputType="textPersonName"
-                android:maxLength="50" />
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider_light"
-                android:layout_marginTop="8dp"
-                android:layout_marginBottom="16dp" />
-
-            <!-- Language Preference -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Response Language"
-                android:textSize="13sp"
-                android:textColor="?android:attr/textColorSecondary"
-                android:layout_marginBottom="8dp" />
-
-            <Spinner
-                android:id="@+id/spinner_language"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:background="@android:color/transparent" />
-
-        </LinearLayout>
-
-    </LinearLayout>
-</ScrollView>
-```
-
-- [ ] **Step 7: Commit**
-
-```bash
-cd ~/Desktop/DollOS-build/packages/apps/DollOSSetupWizard
-git add -A
-git commit -m "feat: migrate OOBE to bind DollOSAIService for API key and 5-field personality"
-```
-
----
-
-## Task 10: Vendor Config and Build Integration
-
-**Goal:** Add DollOSAIService to the vendor product makefile so it gets built and included in the system image. Add privapp permissions copy target.
-
-**Files:**
+- Create: `external/DollOSAIService/Android.bp`
+- Create: `external/DollOSAIService/privapp-permissions-dollos-ai.xml`
 - Modify: `vendor/dollos/dollos_bluejay.mk`
 
-- [ ] **Step 1: Update dollos_bluejay.mk**
+- [ ] **Step 1: Create external/DollOSAIService/Android.bp**
 
-In `vendor/dollos/dollos_bluejay.mk`, add `DollOSAIService` to `PRODUCT_PACKAGES` and add the privapp permissions copy:
+Create `external/DollOSAIService/Android.bp`:
+
+```
+android_app_import {
+    name: "DollOSAIService",
+    apk: "prebuilt/DollOSAIService.apk",
+    privileged: true,
+    certificate: "platform",
+    presigned: false,
+    dex_preopt: {
+        enabled: true,
+    },
+    required: [
+        "privapp-permissions-dollos-ai.xml",
+    ],
+}
+
+prebuilt_etc {
+    name: "privapp-permissions-dollos-ai.xml",
+    src: "privapp-permissions-dollos-ai.xml",
+    sub_dir: "permissions",
+}
+```
+
+- [ ] **Step 2: Create privapp-permissions-dollos-ai.xml**
+
+Create `external/DollOSAIService/privapp-permissions-dollos-ai.xml`:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<permissions>
+    <privapp-permissions package="org.dollos.ai">
+        <permission name="android.permission.INTERNET" />
+        <permission name="android.permission.RECEIVE_BOOT_COMPLETED" />
+        <permission name="android.permission.FOREGROUND_SERVICE" />
+        <permission name="android.permission.POST_NOTIFICATIONS" />
+    </privapp-permissions>
+</permissions>
+```
+
+- [ ] **Step 3: Create placeholder directory for prebuilt APK**
+
+```bash
+mkdir -p external/DollOSAIService/prebuilt/
+# The APK will be placed here after building the Gradle project (Task 12).
+```
+
+- [ ] **Step 4: Update dollos_bluejay.mk**
+
+Add DollOSAIService to `vendor/dollos/dollos_bluejay.mk`:
 
 ```makefile
-# Inherit from GrapheneOS bluejay configuration
-$(call inherit-product, device/google/bluejay/aosp_bluejay.mk)
-
-# DollOS identity
-PRODUCT_NAME := dollos_bluejay
-PRODUCT_DEVICE := bluejay
-PRODUCT_BRAND := DollOS
-PRODUCT_MODEL := DollOS on Pixel 6a
-PRODUCT_MANUFACTURER := DollOS
-
-# DollOS version
-DOLLOS_VERSION := 0.1.0
-PRODUCT_SYSTEM_PROPERTIES += \
-    ro.dollos.version=$(DOLLOS_VERSION) \
-    persist.sys.usb.config=mtp,adb \
-    ro.adb.secure=0
-
 # DollOS packages
 PRODUCT_PACKAGES += \
     DollOSService \
-    DollOSAIService \
-    DollOSSetupWizard
-
-# Remove GrapheneOS apps not needed for DollOS
-PRODUCT_PACKAGES_REMOVE += \
-    Auditor \
-    Updater
-
-# DollOS SELinux policy
-BOARD_VENDOR_SEPOLICY_DIRS += vendor/dollos/sepolicy
+    DollOSSetupWizard \
+    DollOSAIService
 
 # Privapp permissions
 PRODUCT_COPY_FILES += \
     packages/apps/DollOSService/privapp-permissions-dollos-service.xml:$(TARGET_COPY_OUT_SYSTEM)/etc/permissions/privapp-permissions-dollos-service.xml \
-    packages/apps/DollOSAIService/privapp-permissions-dollos-ai.xml:$(TARGET_COPY_OUT_SYSTEM)/etc/permissions/privapp-permissions-dollos-ai.xml \
     packages/apps/DollOSSetupWizard/privapp-permissions-dollos-setup.xml:$(TARGET_COPY_OUT_SYSTEM)/etc/permissions/privapp-permissions-dollos-setup.xml
 ```
 
-- [ ] **Step 2: Add DollOSAIService to platform manifest**
+Note: The `privapp-permissions-dollos-ai.xml` is handled by the `prebuilt_etc` module in `external/DollOSAIService/Android.bp` via the `required` field, so it does not need a `PRODUCT_COPY_FILES` entry.
 
-The platform manifest at `ningyos/platform_manifest` needs a new `<project>` entry for DollOSAIService. Add to the local manifest (the same way DollOSService is added):
+- [ ] **Step 5: Add to platform_manifest (local_manifests)**
 
-```xml
-<project path="packages/apps/DollOSAIService" name="ningyos/DollOSAIService" remote="github" />
+Create or update `~/Desktop/DollOS-build/.repo/local_manifests/dollos.xml` to include the external directory if needed. Since `external/DollOSAIService/` is a directory within the AOSP tree (not a separate git repo for the build), it can simply be committed to the AOSP tree directly.
+
+- [ ] **Step 6: Add dollos-ai-aidl dependency to DollOSSetupWizard**
+
+Modify `packages/apps/DollOSSetupWizard/Android.bp` to add `dollos-ai-aidl` to static_libs:
+
 ```
-
-This is done in the manifest repo, not in the build tree. The agentic worker should create the git repo on GitHub and add this entry to the manifest.
-
-- [ ] **Step 3: Commit vendor config**
-
-```bash
-cd ~/Desktop/DollOS-build/vendor/dollos
-git add dollos_bluejay.mk
-git commit -m "feat: add DollOSAIService to product packages and privapp permissions"
-```
-
----
-
-## Task 11: Deprecate Old DollOSService AI Methods
-
-**Goal:** Mark the old `setApiKey`, `setPersonality`, `getPersonalityName` methods in DollOSService AIDL as deprecated. Keep them functional during transition but add deprecation comments. Update DollOSServiceImpl to log deprecation warnings.
-
-**Files:**
-- Modify: `packages/apps/DollOSService/aidl/org/dollos/service/IDollOSService.aidl`
-- Modify: `packages/apps/DollOSService/src/org/dollos/service/DollOSServiceImpl.kt`
-
-- [ ] **Step 1: Update IDollOSService.aidl with deprecation comments**
-
-Replace the full content of `packages/apps/DollOSService/aidl/org/dollos/service/IDollOSService.aidl`:
-
-```aidl
-package org.dollos.service;
-
-interface IDollOSService {
-    /** Returns the DollOS version string */
-    String getVersion();
-
-    /** Returns true if the AI core is configured (API key set) */
-    boolean isAiConfigured();
-
-    /** Returns the path to the DollOS data directory */
-    String getDataDirectory();
-
-    /**
-     * @deprecated Use DollOSAIService.setForegroundModel() instead.
-     * Kept for backward compatibility during transition.
-     */
-    void setApiKey(String provider, String apiKey);
-
-    /** Store GMS opt-in preference (called by OOBE wizard via Binder) */
-    void setGmsOptIn(boolean optIn);
-
-    /** Check if user opted into GMS */
-    boolean isGmsOptedIn();
-
-    /**
-     * @deprecated Use DollOSAIService personality methods instead
-     * (setBackstory, setResponseDirective, setDynamism, setAddress, setLanguagePreference).
-     * Kept for backward compatibility during transition.
-     */
-    void setPersonality(String name, String description);
-
-    /**
-     * @deprecated Use DollOSAIService.getBackstory() or personality methods instead.
-     * Kept for backward compatibility during transition.
-     */
-    String getPersonalityName();
+android_app {
+    name: "DollOSSetupWizard",
+    ...
+    static_libs: [
+        "androidx.core_core-ktx",
+        "dollos-service-aidl",
+        "dollos-ai-aidl",
+    ],
+    ...
 }
 ```
 
-- [ ] **Step 2: Update DollOSServiceImpl.kt with deprecation warnings**
-
-In `packages/apps/DollOSService/src/org/dollos/service/DollOSServiceImpl.kt`, update the deprecated methods to log warnings:
-
-Replace `override fun setApiKey` with:
-
-```kotlin
-    override fun setApiKey(provider: String, apiKey: String) {
-        Log.w(TAG, "setApiKey() is deprecated. Use DollOSAIService.setForegroundModel() instead.")
-        DollOSApp.prefs.edit()
-            .putString(KEY_PROVIDER, provider)
-            .putString(KEY_API_KEY, apiKey)
-            .apply()
-        Log.i(TAG, "API key saved for provider: $provider")
-    }
-```
-
-Replace `override fun setPersonality` with:
-
-```kotlin
-    override fun setPersonality(name: String, description: String) {
-        Log.w(TAG, "setPersonality() is deprecated. Use DollOSAIService personality methods instead.")
-        DollOSApp.prefs.edit()
-            .putString(KEY_AI_NAME, name)
-            .putString(KEY_AI_DESCRIPTION, description)
-            .apply()
-        Log.i(TAG, "AI personality set: $name")
-    }
-```
-
-Replace `override fun getPersonalityName` with:
-
-```kotlin
-    override fun getPersonalityName(): String {
-        Log.w(TAG, "getPersonalityName() is deprecated. Use DollOSAIService personality methods instead.")
-        return DollOSApp.prefs.getString(KEY_AI_NAME, "") ?: ""
-    }
-```
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 7: Commit AOSP changes**
 
 ```bash
-cd ~/Desktop/DollOS-build/packages/apps/DollOSService
-git add -A
-git commit -m "feat: deprecate old AI methods in DollOSService AIDL (migrated to DollOSAIService)"
+cd ~/Desktop/DollOS-build
+git -C external/DollOSAIService add .
+git -C external/DollOSAIService commit -m "feat: add DollOSAIService prebuilt APK integration with android_app_import"
+
+git -C vendor/dollos add dollos_bluejay.mk
+git -C vendor/dollos commit -m "feat: add DollOSAIService to PRODUCT_PACKAGES"
+
+git -C packages/apps/DollOSSetupWizard add Android.bp
+git -C packages/apps/DollOSSetupWizard commit -m "feat: add dollos-ai-aidl dependency for DollOSAIService binding"
 ```
 
 ---
 
-## Task 12: Build, Flash, and Verify
+## Task 11: OOBE Migration
 
-**Goal:** Verify the complete build compiles, flashes to device, and all components work: DollOSAIService starts, OOBE binds to it, personality can be configured, and API key is stored via AIService.
+**Goal:** Update DollOSSetupWizard to bind to DollOSAIService for API key configuration and personality setup. The ApiKeyPage now calls `setForegroundModel` on DollOSAIService. The PersonalityPage now has 5 fields (backstory, directive, dynamism, address, language) instead of the old single-field personality.
 
-- [ ] **Step 1: Build**
+**Files:**
+- Modify: `packages/apps/DollOSSetupWizard/src/org/dollos/setup/SetupWizardActivity.kt`
+- Modify: `packages/apps/DollOSSetupWizard/src/org/dollos/setup/ApiKeyPage.kt`
+- Modify: `packages/apps/DollOSSetupWizard/src/org/dollos/setup/PersonalityPage.kt`
+- Modify: `packages/apps/DollOSSetupWizard/res/layout/page_api_key.xml`
+- Modify: `packages/apps/DollOSSetupWizard/res/layout/page_personality.xml`
+
+- [ ] **Step 1: Add DollOSAIService binding to SetupWizardActivity.kt**
+
+Add a ServiceConnection for DollOSAIService alongside the existing DollOSService connection:
+
+```kotlin
+// Add to SetupWizardActivity class body:
+
+private var aiService: IDollOSAIService? = null
+private var isAIBound = false
+
+private val aiServiceConnection = object : ServiceConnection {
+    override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+        aiService = IDollOSAIService.Stub.asInterface(service)
+        Log.i(TAG, "Connected to DollOSAIService")
+    }
+
+    override fun onServiceDisconnected(name: ComponentName?) {
+        aiService = null
+        Log.w(TAG, "Disconnected from DollOSAIService")
+    }
+}
+
+// In onCreate(), add:
+val aiIntent = Intent("org.dollos.ai.IDollOSAIService")
+aiIntent.setPackage("org.dollos.ai")
+isAIBound = bindService(aiIntent, aiServiceConnection, Context.BIND_AUTO_CREATE)
+
+// In onDestroy(), add:
+if (isAIBound) {
+    unbindService(aiServiceConnection)
+}
+
+// Expose getter for pages:
+fun getAIService(): IDollOSAIService? = aiService
+```
+
+- [ ] **Step 2: Update ApiKeyPage to call DollOSAIService**
+
+Replace DollOSService API key calls with DollOSAIService calls:
+
+```kotlin
+// In ApiKeyPage, when user saves API key configuration:
+// OLD: activity.getDollOSService()?.setApiKey(apiKey)
+// NEW:
+val provider = providerSpinner.selectedItem.toString().lowercase()
+val apiKey = apiKeyEditText.text.toString()
+val model = modelEditText.text.toString()
+activity.getAIService()?.setForegroundModel(provider, apiKey, model)
+```
+
+Layout changes for `page_api_key.xml`:
+- Add Spinner for provider selection (Claude, OpenAI, Grok, Custom)
+- Add EditText for model name
+- Keep existing EditText for API key
+- Add optional section for background model (same 3 fields)
+
+- [ ] **Step 3: Update PersonalityPage with 5 fields**
+
+Replace the old single personality field with 5 fields:
+
+```kotlin
+// In PersonalityPage, when user saves personality:
+val aiService = activity.getAIService() ?: return
+
+aiService.setBackstory(backstoryEditText.text.toString())
+aiService.setResponseDirective(directiveEditText.text.toString())
+aiService.setDynamism(dynamismSlider.value)
+aiService.setAddress(addressEditText.text.toString())
+aiService.setLanguagePreference(languageSpinner.selectedItem.toString())
+```
+
+Layout changes for `page_personality.xml`:
+- EditText: Backstory (multiline, max 2500 chars, hint: "Describe your AI companion's personality in 3rd person")
+- EditText: Response Directive (single line, max 150 chars, hint: "How should the AI respond? e.g., 'Be concise and witty'")
+- Slider: Dynamism (0.0 to 1.0, labels: "Stable" to "Creative")
+- EditText: Address (single line, max 50 chars, hint: "How should the AI address you?")
+- Spinner: Language Preference (English, Chinese, Japanese, Mixed, Custom)
+
+- [ ] **Step 4: Commit**
+
+```bash
+cd ~/Desktop/DollOS-build/packages/apps/DollOSSetupWizard
+git add .
+git commit -m "feat: update OOBE to bind DollOSAIService for API key and 5-field personality setup"
+```
+
+---
+
+## Task 12: Build + Flash + Verify
+
+**Goal:** Build the Gradle project, copy the APK to the AOSP tree, build AOSP, flash, and verify DollOSAIService is running.
+
+- [ ] **Step 1: Build Gradle project**
+
+```bash
+cd DollOSAIService
+./gradlew assembleRelease
+```
+
+Output APK at: `DollOSAIService/app/build/outputs/apk/release/app-release.apk`
+
+Note: This APK is debug-signed. Platform signing happens during AOSP build because `android_app_import` has `certificate: "platform"` and `presigned: false`.
+
+- [ ] **Step 2: Copy APK to AOSP tree**
+
+```bash
+cp DollOSAIService/app/build/outputs/apk/release/app-release.apk \
+   ~/Desktop/DollOS-build/external/DollOSAIService/prebuilt/DollOSAIService.apk
+```
+
+- [ ] **Step 3: Build AOSP**
 
 ```bash
 cd ~/Desktop/DollOS-build
 source build/envsetup.sh
-lunch dollos_bluejay-cur-userdebug
+lunch dollos_bluejay-userdebug
 m -j$(nproc)
 ```
 
-If build errors occur, fix them before proceeding. Common issues:
-- AIDL import path issues: ensure `aidl/` dirs match the `local_include_dirs` in Android.bp
-- Kotlin version conflicts: ensure `kotlincflags` matches other modules
-- Missing AIDL stubs: ensure `dollos-ai-aidl` and `dollos-service-aidl` are in the correct `static_libs`
-
-- [ ] **Step 2: Flash**
+- [ ] **Step 4: Flash**
 
 ```bash
+cd ~/Desktop/DollOS-build
 adb reboot bootloader
-# wait for device
-cd out/target/product/bluejay
 fastboot flashall -w
 ```
 
-- [ ] **Step 3: Verify DollOSAIService starts**
+- [ ] **Step 5: Verify DollOSAIService is installed and running**
 
 ```bash
+# Check app is installed
+adb shell pm list packages | grep org.dollos.ai
+
 # Check service is running
 adb shell dumpsys activity services org.dollos.ai
 
+# Check privapp permissions
+adb shell cat /system/etc/permissions/privapp-permissions-dollos-ai.xml
+
 # Check logs
-adb shell logcat -d | grep "DollOSAI"
+adb logcat -s DollOSAIApp:I DollOSAIService:I DollOSAIServiceImpl:I
 ```
 
-Expected log output:
-```
-DollOSAIApp: DollOS AI Application initialized, version 0.1.0
-DollOSAIApp: Notification channel created: dollos_ai_errors
-DollOSAIService: DollOS AI Service created
-DollOSAIService: Connected to DollOSService
-```
-
-- [ ] **Step 4: Verify OOBE binds to both services**
-
-Run through OOBE on device. On the API Key page, enter a provider and key. On the Personality page, fill in fields. Check logs:
+- [ ] **Step 6: Verify AIDL binding works**
 
 ```bash
-adb shell logcat -d | grep -E "DollOSAIServiceImpl|PersonalityManager"
+# Check that DollOSSetupWizard can bind to DollOSAIService
+adb logcat -s DollOSSetupWizard:I | grep "DollOSAIService"
+
+# Check that DollOSAIService can bind to DollOSService
+adb logcat -s DollOSAIService:I | grep "DollOSService"
 ```
-
-Expected:
-```
-DollOSAIServiceImpl: Foreground model set: Claude / claude-sonnet-4-20250514
-PersonalityManager: Backstory updated (xxx chars)
-PersonalityManager: Response directive updated (xxx chars)
-PersonalityManager: Dynamism updated: 0.5
-```
-
-- [ ] **Step 5: Verify AIDL binding from adb**
-
-```bash
-# Test personality round-trip
-adb shell service call org.dollos.ai 11 s16 "Test backstory"  # setBackstory
-adb shell service call org.dollos.ai 16                        # getBackstory
-
-# Test usage stats
-adb shell service call org.dollos.ai 26                        # getUsageStats
-```
-
-- [ ] **Step 6: Verify deprecation warnings in DollOSService**
-
-```bash
-adb shell logcat -d | grep "deprecated"
-```
-
-These should appear if old methods are still called.
 
 ---
 
-## Notes
+## Architecture Summary
 
-### Dependencies
+```
++-----------------------------------------------------------+
+|                  AOSP Build Tree                          |
+|                                                           |
+|  packages/apps/DollOSAIService/                           |
+|    Android.bp (dollos-ai-aidl java_library)               |
+|    aidl/  (AIDL source of truth)                          |
+|                                                           |
+|  packages/apps/DollOSService/                             |
+|    Android.bp (dollos-service-aidl + DollOSService app)   |
+|    depends on: dollos-ai-aidl (to receive AI callbacks)   |
+|                                                           |
+|  packages/apps/DollOSSetupWizard/                         |
+|    Android.bp                                             |
+|    depends on: dollos-service-aidl, dollos-ai-aidl        |
+|                                                           |
+|  external/DollOSAIService/                                |
+|    Android.bp (android_app_import)                        |
+|    prebuilt/DollOSAIService.apk  <--+                     |
+|    privapp-permissions-dollos-ai.xml |                    |
+|                                      |                    |
+|  vendor/dollos/dollos_bluejay.mk     |                    |
+|    PRODUCT_PACKAGES += DollOSAIService                    |
++-----------------------------------------------------------+
+                                       |
+                  Built externally     |
+                                       |
++-----------------------------------------------------------+
+|           ningyos/DollOSAIService (Gradle)                |
+|                                                           |
+|  app/build.gradle.kts                                     |
+|    - OkHttp 4.12.0 (Maven)                               |
+|    - kotlinx-serialization-json 1.7.3 (Maven)            |
+|    - kotlinx-coroutines-android 1.9.0 (Maven)            |
+|    - dollos-service-aidl.jar (compileOnly, from AOSP)     |
+|                                                           |
+|  app/src/main/aidl/  (copied from AOSP)                  |
+|  app/src/main/java/org/dollos/ai/                         |
+|    DollOSAIApp.kt                                         |
+|    DollOSAIService.kt                                     |
+|    DollOSAIServiceImpl.kt                                 |
+|    llm/ (LLM providers with OkHttp)                       |
+|    personality/ (5-field system)                           |
+|    usage/ (tracking + budget)                             |
+|                                                           |
+|  ./gradlew assembleRelease                                |
+|    -> app/build/outputs/apk/release/app-release.apk   ---+
++-----------------------------------------------------------+
+```
 
-- **Plan A depends on nothing** -- it is self-contained and can be implemented first.
-- **Plan B (Memory System)** will fill in the memory stubs (`searchMemory`, `exportMemory`, `importMemory`, `confirmMemoryWrite`) and integrate with `SystemPromptBuilder.buildWithMemory()`.
-- **Plan C (Agent + Emergency Stop)** adds `executeSystemAction` and `getAvailableActions` to DollOSService, which Plan A's `loadToolDefinitions()` and `handleToolCalls()` already expect.
+**Data flow for AIDL sharing:**
 
-### What works after Plan A
+```
+AOSP packages/apps/DollOSAIService/aidl/  (source of truth)
+    |
+    +-- Soong builds dollos-ai-aidl java_library
+    |     |
+    |     +-- DollOSService static_libs (to call DollOSAIService)
+    |     +-- DollOSSetupWizard static_libs (to call DollOSAIService)
+    |
+    +-- Manually copied to Gradle project src/main/aidl/
+          |
+          +-- Gradle AIDL plugin generates Java stubs
+                |
+                +-- DollOSAIServiceImpl implements IDollOSAIService.Stub
+```
 
-1. DollOSAIService starts and connects to DollOSService via Binder
-2. AIDL interface fully functional (all methods implemented or stubbed)
-3. OOBE writes API key and 5-field personality to DollOSAIService
-4. `sendMessage()` sends to configured LLM provider with streaming
-5. Personality system constructs system prompt from all 5 fields
-6. Per-provider temperature clamping (Claude 0.3-1.0, OpenAI/Grok 0.3-1.2)
-7. Usage tracking records every API call
-8. Budget controls enforce warning and hard limit (daily/monthly)
-9. API errors surfaced via system notifications
-10. `pauseAll()` / `resumeAll()` with 3s synchronous timeout
-11. Tool calls forwarded to DollOSService (when Plan C is also deployed)
-12. Old DollOSService AI methods deprecated with log warnings
+**Build workflow:**
 
-### What does NOT work yet (needs Plan B or C)
-
-- Memory search, export, import (stubs return empty)
-- Memory-augmented system prompts (only personality fields used)
-- Agent action execution (requires Plan C's DollOSService updates)
-- Emergency stop UI (requires Plan C's TaskManagerActivity)
-- Conversation history persistence (Plan B scope)
-- Context window management and compression (Plan B scope)
+```
+1. Edit AIDL in AOSP packages/apps/DollOSAIService/aidl/ (if changed)
+2. Copy AIDL to Gradle project (if changed)
+3. Edit Kotlin source in Gradle project
+4. ./gradlew assembleRelease
+5. cp APK to external/DollOSAIService/prebuilt/
+6. m -j$(nproc) in AOSP tree
+7. fastboot flashall
+```

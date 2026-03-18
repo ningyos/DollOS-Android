@@ -6,7 +6,7 @@
 
 **Architecture:** DollOSService binds to DollOSAIService on startup. ContextCompressor uses the foreground LLM client for compression. ConversationManager and MemoryManager are wired into sendMessage. All product makefile changes are consolidated. Data migration handles the transition from DollOSService-held API key/personality to DollOSAIService.
 
-**Tech Stack:** Kotlin, AIDL (Binder IPC), Soong build system (Android.bp), SharedPreferences
+**Tech Stack:** Kotlin, AIDL (Binder IPC), Soong (DollOSService) + Gradle (DollOSAIService), SharedPreferences
 
 ---
 
@@ -22,16 +22,17 @@ packages/apps/DollOSService/
     DollOSServiceImpl.kt             -- wire showTaskManager to pauseAll/getActiveTasks
 ```
 
-### DollOSAIService (modify existing)
+### DollOSAIService Gradle project (modify existing)
 
 ```
-packages/apps/DollOSAIService/
-  src/org/dollos/ai/
+DollOSAIService/app/src/main/java/org/dollos/ai/
     DollOSAIServiceImpl.kt           -- wire compressor, conversation, memory into sendMessage
     DollOSAIApp.kt                   -- instantiate MemoryManager, ConversationManager
     migration/
       DataMigration.kt               -- migrate API key/personality from DollOSService
 ```
+
+Note: DollOSAIService is a Gradle project, not AOSP Soong. After changes, rebuild with `./gradlew assembleRelease` and copy APK to `external/DollOSAIService/prebuilt/` in AOSP tree.
 
 ### Task Manager (modify existing)
 
