@@ -17,8 +17,7 @@
 ```
 packages/apps/DollOSService/
   aidl/org/dollos/service/
-    IDollOSService.aidl              -- add executeSystemAction, showTaskManager
-    IDollOSAICallback.aidl           -- new: callback interface for AI events
+    IDollOSService.aidl              -- add executeSystemAction, getAvailableActions, showTaskManager
   src/org/dollos/service/
     DollOSApp.kt                     -- existing (no change)
     DollOSService.kt                 -- add action execution + task manager binding

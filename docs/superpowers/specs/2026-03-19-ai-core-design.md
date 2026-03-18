@@ -72,7 +72,7 @@ Supported providers (first version): Claude, Grok, OpenAI, custom endpoint.
   - Modal shows: task name, description, start time, token usage, estimated cost, conversation context
   - User can cancel individual tasks or resume all
   - Modal has highest priority (same level as power menu), cannot be accessed by AI
-  - Requires framework modification (`PhoneWindowManager`) to intercept power button double-click
+  - Uses AOSP's built-in config_doublePressOnPowerBehavior resource overlay (value 3 = LAUNCH_TARGET_ACTIVITY) to launch TaskManagerActivity. No framework modification needed.
 
 ### Stop Triggers
 
@@ -258,7 +258,7 @@ Users can change confirmation settings per action in Settings.
 
 ### Trigger
 
-Double-click power button. Requires `PhoneWindowManager` framework modification to intercept.
+Double-click power button. Uses AOSP's built-in config_doublePressOnPowerBehavior resource overlay (value 3 = LAUNCH_TARGET_ACTIVITY) to launch TaskManagerActivity. No framework modification needed.
 
 ### Behavior
 
@@ -363,8 +363,11 @@ interface IDollOSAIService {
 Add to existing interface:
 
 ```
-// Agent execution (on behalf of AIService)
-void executeSystemAction(String actionId, String paramsJson);
+// Agent execution (on behalf of AIService) -- returns JSON result
+String executeSystemAction(String actionId, String paramsJson);
+
+// Available actions query
+String getAvailableActions();
 
 // Emergency stop
 void showTaskManager();
