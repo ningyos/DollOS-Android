@@ -1,17 +1,25 @@
-android_app {
-    name: "DollOSService",
+java_library {
+    name: "dollos-service-aidl",
     srcs: [
-        "src/**/*.kt",
         "aidl/**/*.aidl",
     ],
     aidl: {
         local_include_dirs: ["aidl"],
     },
     platform_apis: true,
+}
+
+android_app {
+    name: "DollOSService",
+    srcs: [
+        "src/**/*.kt",
+    ],
+    platform_apis: true,
     privileged: true,
     certificate: "platform",
     static_libs: [
         "androidx.core_core-ktx",
+        "dollos-service-aidl",
     ],
     kotlincflags: ["-Xjvm-default=all"],
 }
