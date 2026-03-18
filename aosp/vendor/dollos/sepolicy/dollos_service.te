@@ -1,30 +1,13 @@
-# DollOS Service domain -- persistent platform-signed priv-app
-# Uses app_domain() for Zygote-launched process. No coredomain (reserved for init/vold/system_server).
-type dollos_service, domain;
-
-app_domain(dollos_service)
-net_domain(dollos_service)
-
-# File access: own app data directory (labeled system_app_data_file for sharedUserId=system)
-allow dollos_service system_app_data_file:dir create_dir_perms;
-allow dollos_service system_app_data_file:file create_file_perms;
-
-# File access: DollOS-specific data (if restorecon applied)
-allow dollos_service dollos_data_file:dir create_dir_perms;
-allow dollos_service dollos_data_file:file create_file_perms;
-
-# Binder IPC
-binder_use(dollos_service)
-binder_service(dollos_service)
-
-# Access to system services via app API (required for app lifecycle)
-allow dollos_service app_api_service:service_manager find;
-
-# Allow callers
-allow system_app dollos_service:binder { call transfer };
-allow untrusted_app dollos_service:binder { call transfer };
-allow dollos_service dollos_service:binder { call transfer };
-
-# Network access (for cloud LLM API calls)
-allow dollos_service self:tcp_socket { create connect read write getattr setopt };
-allow dollos_service port_type:tcp_socket name_connect;
+# DollOS Service SELinux policy
+# Currently runs as system_app domain (default for sharedUserId=system + platform cert)
+# Custom dollos_service domain deferred until system sepolicy integration
+#
+# When ready to use custom domain, uncomment and move to system/sepolicy/private/:
+# type dollos_service, domain;
+# app_domain(dollos_service)
+# net_domain(dollos_service)
+# allow dollos_service dollos_data_file:dir create_dir_perms;
+# allow dollos_service dollos_data_file:file create_file_perms;
+# binder_use(dollos_service)
+# binder_service(dollos_service)
+# allow dollos_service app_api_service:service_manager find;

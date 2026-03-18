@@ -10,9 +10,8 @@ PRODUCT_MANUFACTURER := DollOS
 
 # DollOS version
 DOLLOS_VERSION := 0.1.0
-PRODUCT_PROPERTY_OVERRIDES += \
+PRODUCT_SYSTEM_PROPERTIES += \
     ro.dollos.version=$(DOLLOS_VERSION) \
-    ro.build.display.id=DollOS-$(DOLLOS_VERSION) \
     persist.sys.usb.config=mtp,adb \
     ro.adb.secure=0
 
@@ -20,6 +19,11 @@ PRODUCT_PROPERTY_OVERRIDES += \
 PRODUCT_PACKAGES += \
     DollOSService \
     DollOSSetupWizard
+
+# Remove GrapheneOS apps not needed for DollOS
+PRODUCT_PACKAGES_REMOVE += \
+    Auditor \
+    Updater
 
 # DollOS SELinux policy
 BOARD_VENDOR_SEPOLICY_DIRS += vendor/dollos/sepolicy

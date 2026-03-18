@@ -12,19 +12,19 @@ class DollOSServiceImpl : IDollOSService.Stub() {
     }
 
     override fun getVersion(): String {
-        return DollOSService.VERSION
+        return DollOSApp.VERSION
     }
 
     override fun isAiConfigured(): Boolean {
-        return DollOSService.prefs.contains(KEY_API_KEY)
+        return DollOSApp.prefs.contains(KEY_API_KEY)
     }
 
     override fun getDataDirectory(): String {
-        return DollOSService.prefs.all.toString()
+        return DollOSApp.prefs.all.toString()
     }
 
     override fun setApiKey(provider: String, apiKey: String) {
-        DollOSService.prefs.edit()
+        DollOSApp.prefs.edit()
             .putString(KEY_PROVIDER, provider)
             .putString(KEY_API_KEY, apiKey)
             .apply()
@@ -32,13 +32,13 @@ class DollOSServiceImpl : IDollOSService.Stub() {
     }
 
     override fun setGmsOptIn(optIn: Boolean) {
-        DollOSService.prefs.edit()
+        DollOSApp.prefs.edit()
             .putBoolean(KEY_GMS_OPTIN, optIn)
             .apply()
         Log.i(TAG, "GMS opt-in set to: $optIn")
     }
 
     override fun isGmsOptedIn(): Boolean {
-        return DollOSService.prefs.getBoolean(KEY_GMS_OPTIN, false)
+        return DollOSApp.prefs.getBoolean(KEY_GMS_OPTIN, false)
     }
 }

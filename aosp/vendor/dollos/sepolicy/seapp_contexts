@@ -1,2 +1,3 @@
-# DollOS persistent system service (platform-signed, running as system user)
-user=system seinfo=platform name=org.dollos.service domain=dollos_service
+# DollOS: no custom domain mapping
+# DollOSService runs as system_app domain (default for sharedUserId=system + platform cert)
+# Custom dollos_service domain deferred until system sepolicy integration
