@@ -18,4 +18,10 @@ interface IDollOSService {
 
     /** Check if user opted into GMS */
     boolean isGmsOptedIn();
+
+    /** Store AI personality configuration */
+    void setPersonality(String name, String description);
+
+    /** Get AI personality name */
+    String getPersonalityName();
 }

@@ -3,6 +3,7 @@
     package="org.dollos.setup">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
@@ -10,7 +11,7 @@
 
     <application
         android:label="DollOS Setup"
-        android:theme="@style/Theme.MaterialComponents.DayNight.NoActionBar">
+        android:theme="@style/Theme.DollOS.Setup">
 
         <activity
             android:name=".SetupWizardActivity"

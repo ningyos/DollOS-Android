@@ -38,16 +38,19 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Provider"
+                android:text="Name"
                 android:textSize="13sp"
                 android:textColor="?android:attr/textColorSecondary"
                 android:layout_marginBottom="8dp" />
 
-            <Spinner
-                android:id="@+id/spinner_provider"
+            <EditText
+                android:id="@+id/input_name"
                 android:layout_width="match_parent"
                 android:layout_height="48dp"
-                android:background="@android:color/transparent" />
+                android:hint="Give your AI a name"
+                android:background="@android:color/transparent"
+                android:textSize="16sp"
+                android:inputType="textPersonName" />
 
             <View
                 android:layout_width="match_parent"
@@ -59,19 +62,21 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="API Key"
+                android:text="Personality"
                 android:textSize="13sp"
                 android:textColor="?android:attr/textColorSecondary"
                 android:layout_marginBottom="8dp" />
 
             <EditText
-                android:id="@+id/input_api_key"
+                android:id="@+id/input_description"
                 android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:inputType="textPassword"
-                android:hint="Enter your API key"
+                android:layout_height="wrap_content"
+                android:minHeight="96dp"
+                android:hint="Describe your AI's personality..."
                 android:background="@android:color/transparent"
-                android:textSize="16sp" />
+                android:textSize="16sp"
+                android:inputType="textMultiLine"
+                android:gravity="top" />
 
         </LinearLayout>
 

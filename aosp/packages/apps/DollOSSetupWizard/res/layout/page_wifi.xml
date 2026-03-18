@@ -22,27 +22,28 @@
         android:gravity="center"
         style="@style/SetupSubtitle" />
 
-    <LinearLayout
-        android:layout_width="match_parent"
+    <TextView
+        android:id="@+id/wifi_status"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="40dp"
-        android:orientation="horizontal"
-        android:gravity="center_vertical"
-        style="@style/SetupCard">
+        android:textSize="17sp"
+        android:fontFamily="sans-serif-medium"
+        android:textColor="?android:attr/textColorPrimary" />
 
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Install sandboxed Google Play"
-            android:textSize="16sp" />
-
-        <com.google.android.material.switchmaterial.SwitchMaterial
-            android:id="@+id/switch_gms"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:checked="false" />
-
-    </LinearLayout>
+    <TextView
+        android:id="@+id/btn_open_wifi"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="20dp"
+        android:text="Open Wi-Fi Settings"
+        android:textSize="17sp"
+        android:fontFamily="sans-serif-medium"
+        android:textColor="@color/btn_primary_text_light"
+        android:background="@drawable/button_primary_background"
+        android:paddingTop="14dp"
+        android:paddingBottom="14dp"
+        android:paddingLeft="36dp"
+        android:paddingRight="36dp" />
 
 </LinearLayout>
