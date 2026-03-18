@@ -1,0 +1,2 @@
+# DollOS persistent system service (platform-signed, running as system user)
+user=system seinfo=platform name=org.dollos.service domain=dollos_service

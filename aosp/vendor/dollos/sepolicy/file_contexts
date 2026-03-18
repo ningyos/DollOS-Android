@@ -1,0 +1,2 @@
+# DollOS data directories
+/data/dollos(/.*)?    u:object_r:dollos_data_file:s0

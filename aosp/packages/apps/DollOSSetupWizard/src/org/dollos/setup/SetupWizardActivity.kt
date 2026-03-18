@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.IBinder
 import android.provider.Settings
@@ -93,6 +94,13 @@ class SetupWizardActivity : AppCompatActivity() {
     private fun finishSetup() {
         Settings.Global.putInt(contentResolver, Settings.Global.DEVICE_PROVISIONED, 1)
         Settings.Secure.putInt(contentResolver, Settings.Secure.USER_SETUP_COMPLETE, 1)
+
+        // Disable this activity so it no longer responds to HOME intent
+        packageManager.setComponentEnabledSetting(
+            ComponentName(this, SetupWizardActivity::class.java),
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+            PackageManager.DONT_KILL_APP
+        )
 
         val intent = Intent(Intent.ACTION_MAIN)
         intent.addCategory(Intent.CATEGORY_HOME)
