@@ -11,7 +11,7 @@ AI Core runs as an independent system service (`DollOSAIService`) separate from 
 ### Service Architecture
 
 ```
-DollOSAIService (normal app uid)
+DollOSAIService (normal app uid, platform cert)
   - LLM Client
   - Conversation Engine
   - Memory System
@@ -20,12 +20,12 @@ DollOSAIService (normal app uid)
 
 DollOSService (system uid)
   - System config (GMS, version)
-  - Agent execution (WiFi, Bluetooth, alarms -- on behalf of AIService)
+  - Agent execution (WiFi, Bluetooth, alarms, open app -- on behalf of AIService)
   - AI Task Manager (emergency stop UI)
   - Power button interception
 ```
 
-DollOSAIService uses normal app uid (NOT sharedUserId=system) to avoid storage issues. System-privileged operations are delegated to DollOSService via Binder IPC.
+DollOSAIService uses normal app uid (NOT sharedUserId=system) to avoid storage issues. System-privileged operations (including starting Activities from background) are delegated to DollOSService via Binder IPC.
 
 ### Responsibility Split
 
@@ -34,25 +34,37 @@ DollOSAIService uses normal app uid (NOT sharedUserId=system) to avoid storage i
 | API key, personality, memory | DollOSAIService |
 | GMS preference, DollOS version | DollOSService |
 | LLM API calls | DollOSAIService |
-| System operations (WiFi, BT, alarms) | DollOSService (executed on behalf of AIService) |
+| All agent actions (WiFi, BT, alarms, open app) | DollOSService (executed on behalf of AIService) |
 | AI Task Manager + emergency stop | DollOSService |
 | Conversation history, context management | DollOSAIService |
 
-OOBE binds to both services: GMS page writes to DollOSService, API key and personality pages write to DollOSAIService.
+### Migration from DollOS Base
+
+DollOSService currently holds `setApiKey`, `setPersonality`, `getPersonalityName` methods. These will be:
+1. **Deprecated** in DollOSService AIDL (marked with comment, kept for backward compat during transition)
+2. **Replaced** by DollOSAIService AIDL methods
+3. OOBE updated to bind to both services: GMS page -> DollOSService, API key + personality pages -> DollOSAIService
+4. DollOSService's old personality/API key data migrated to DollOSAIService on first boot after upgrade
+
+### DollOS Base Spec Update
+
+DollOS Base spec's `/data/dollos/` directory structure is superseded for AI data. Memory and AI config are stored in DollOSAIService's own app internal storage (`/data/user/0/org.dollos.ai/files/`). The `/data/dollos/` paths in the Base spec should be treated as reserved for future system-level AI features that require cross-service access.
 
 ## Section 1: LLM Client
 
 ### Multi-Model Support
 
 Supports multiple LLM providers through a unified interface. Users configure in Settings:
-- **Foreground model** -- used for active conversation (higher quality)
-- **Background model** -- used for memory summarization, background tasks (cheaper)
+- **Foreground model** -- used for active conversation and context compression (higher quality)
+- **Background model** -- used for idle memory summarization, background tasks (cheaper)
+
+Context compression uses the foreground model (async, non-blocking) because compression quality directly impacts all subsequent conversation accuracy. The cost trade-off (parallel foreground API call) is justified by the importance of accurate context summaries.
 
 Supported providers (first version): Claude, Grok, OpenAI, custom endpoint.
 
 ### Streaming and Response Control
 
-- Streaming responses by default (token-by-token display)
+- Streaming responses by default (token-by-token display via callback interface)
 - Non-streaming available as option
 - **Emergency stop mechanism:**
   - Double-click power button -> pause ALL AI activity globally
@@ -79,7 +91,7 @@ Tracks per API call:
 Budget controls:
 - User sets **warning threshold** -- notification when exceeded
 - User sets **hard limit** -- all AI functions stop when exceeded
-- Both configurable per day/month in Settings
+- Both configurable with period (per day or per month) and token amount
 
 ### Error Handling
 
@@ -88,7 +100,7 @@ API errors (invalid key, rate limit, network failure) are surfaced via Android s
 ### Offline Mode
 
 - First version: AI conversation fully stops when offline, local small model fallback for future consideration
-- Agent operations that don't need LLM (open app, toggle WiFi/BT) remain functional offline
+- Agent operations that don't need LLM (toggle WiFi/BT) remain functional offline via voice/text command parsing
 - Memory search (ObjectBox local) remains functional offline
 
 ### No Cache
@@ -107,7 +119,7 @@ Conversations are automatically segmented by date. Each day is a separate conver
 1. Monitor context usage continuously
 2. At 70-80% capacity, snapshot current conversation for background compression
 3. Immediately truncate old messages in foreground, keep recent N messages, continue responding
-4. Background compression runs in parallel using foreground model (async API call)
+4. Background compression runs in parallel using foreground model (async API call, non-blocking)
 5. When compression completes, merge: summary + new messages accumulated during compression
 
 **Compression produces:**
@@ -126,6 +138,8 @@ Inspired by OpenClaw/memsearch. **Markdown files are the single source of truth.
 | 2 | `memory/YYYY-MM-DD.md` | Today and yesterday auto-loaded |
 | 3 | `memory/people/`, `topics/`, `decisions/` | Loaded via search when relevant |
 
+All paths relative to DollOSAIService's internal storage: `/data/user/0/org.dollos.ai/files/memory/`.
+
 **Search:** Hybrid search using ObjectBox:
 - Vector search (semantic similarity)
 - BM25 keyword search
@@ -135,7 +149,7 @@ Inspired by OpenClaw/memsearch. **Markdown files are the single source of truth.
 - Cloud API (OpenAI, Voyage, etc.) -- higher quality, requires network
 - Local ONNX model (e.g., all-MiniLM-L6-v2, ~23MB) -- offline capable, lower quality
 
-**Storage:** App internal storage (`/data/user/0/org.dollos.ai/files/memory/`), with export/import functionality for user access and backup.
+**Storage:** App internal storage, with export/import functionality via `ParcelFileDescriptor` (Android scoped storage compliant) for user access and backup.
 
 ### Memory Write Triggers
 
@@ -152,7 +166,7 @@ Three trigger sources, all feeding into a **single serialized write queue**:
 4. User confirms -> write to memory
 5. User corrects -> AI adjusts and re-confirms
 
-**Write failure handling:** Retry 3 times, then persist to temporary storage for retry on next service startup.
+**Write failure handling:** Retry 3 times, then persist to `pending_writes.json` in app internal storage. On next service startup, pending writes are replayed before normal operation. If a pending write conflicts with current index state, the Markdown file content takes precedence.
 
 ### Index Sync
 
@@ -191,8 +205,9 @@ No presets. Users write their own personality configuration.
 ```
 
 Dynamism maps to:
-- LLM temperature parameter (0.0 -> temp 0.3, 1.0 -> temp 1.2)
+- LLM temperature parameter with **per-provider clamping**: Claude (0.3-1.0), OpenAI/Grok (0.3-1.2)
 - Additional prompt wording adjusting creativity level
+- Provider-specific limits applied automatically to prevent API errors
 
 ## Section 4: Agent System
 
@@ -221,10 +236,12 @@ For models that don't support tool calling: not supported in v1, may add keyword
 
 | Action | Parameters | Default Confirm | Executor |
 |--------|-----------|----------------|----------|
-| Open App | package name or app name | No | DollOSAIService (no special permission needed) |
+| Open App | package name or app name | No | DollOSService (via Binder, needs system uid for background activity start) |
 | Set Alarm | time, label | Yes | DollOSService (via Binder) |
 | Toggle WiFi | on/off | Yes | DollOSService (via Binder) |
 | Toggle Bluetooth | on/off | Yes | DollOSService (via Binder) |
+
+All actions are executed by DollOSService (system uid) on behalf of DollOSAIService, because system uid is needed for background activity launches and system setting changes.
 
 ### Confirmation Flow
 
@@ -233,6 +250,7 @@ For models that don't support tool calling: not supported in v1, may add keyword
 3. If yes: display confirmation to user in conversation ("Should I turn on WiFi?")
 4. User confirms -> execute via DollOSService Binder call
 5. User denies -> cancel and inform LLM
+6. **Timeout:** If user doesn't respond within 60 seconds, auto-cancel and inform LLM. Pending confirmation does not block other tasks.
 
 Users can change confirmation settings per action in Settings.
 
@@ -244,40 +262,63 @@ Double-click power button. Requires `PhoneWindowManager` framework modification 
 
 ### Behavior
 
-1. Double-click detected -> DollOSService immediately sends pause signal to DollOSAIService
-2. DollOSAIService pauses all:
-   - Active streaming responses
-   - Background memory processing
-   - Agent task execution
-   - Pending API calls
-3. DollOSService displays Task Manager modal (same z-order as power menu)
-4. Modal shows all AI tasks with:
+1. Double-click detected -> DollOSService sends **synchronous** pause signal to DollOSAIService
+2. `pauseAll()` returns only after all tasks are confirmed paused (blocking Binder call with 3s timeout)
+3. DollOSService then reads task list via `getActiveTasks()` (guaranteed consistent after pause confirmation)
+4. DollOSService displays Task Manager modal (same z-order as power menu)
+5. Modal shows all AI tasks with:
    - Task name and description
    - Start time
    - Token usage and estimated cost
    - Related conversation context
-5. User can:
+6. User can:
    - Cancel individual tasks
    - Resume all (dismiss modal)
    - Dismiss modal (tapping outside) -> resume all
-6. AI cannot access or dismiss this modal
+7. AI cannot access or dismiss this modal
 
 ### Implementation
 
 - DollOSService owns the modal UI and power button interception
 - DollOSAIService reports task list to DollOSService via Binder
+- `pauseAll()` is synchronous with 3s timeout -- if AIService doesn't confirm in time, DollOSService shows modal with stale data and a "refreshing..." indicator
 - Pause/resume signals flow from DollOSService to DollOSAIService via Binder
 
 ## Section 6: AIDL Interfaces
+
+### IDollOSAICallback (new -- for streaming and async events)
+
+```
+interface IDollOSAICallback {
+    // Streaming response
+    void onToken(String token);
+    void onResponseComplete(String fullResponse);
+    void onResponseError(String errorCode, String message);
+
+    // Agent
+    void onActionConfirmRequired(String actionId, String actionName, String description);
+    void onActionExecuted(String actionId, boolean success, String resultMessage);
+
+    // Task updates
+    void onTaskListUpdated(String tasksJson);
+
+    // Memory
+    void onMemoryConfirmRequired(String formattedMemory);
+}
+```
 
 ### IDollOSAIService (new)
 
 ```
 interface IDollOSAIService {
+    // Callback registration
+    void registerCallback(IDollOSAICallback callback);
+    void unregisterCallback(IDollOSAICallback callback);
+
     // Conversation
     void sendMessage(String message);
     void stopGeneration();
-    void pauseAll();
+    boolean pauseAll(); // returns true when all tasks paused, blocking with 3s timeout
     void resumeAll();
 
     // Personality
@@ -296,15 +337,20 @@ interface IDollOSAIService {
     void setForegroundModel(String provider, String apiKey, String model);
     void setBackgroundModel(String provider, String apiKey, String model);
 
+    // Embedding Configuration
+    void setEmbeddingSource(String source); // "cloud" or "local"
+    String getEmbeddingSource();
+
     // Memory
     String searchMemory(String query);
-    void exportMemory(String destinationPath);
-    void importMemory(String sourcePath);
+    void exportMemory(in ParcelFileDescriptor fd);
+    void importMemory(in ParcelFileDescriptor fd);
+    void confirmMemoryWrite(boolean approved); // user confirms "remember this"
 
     // Usage
     String getUsageStats();
-    void setWarningThreshold(long tokens);
-    void setHardLimit(long tokens);
+    void setWarningThreshold(long tokens, String period); // period: "daily" or "monthly"
+    void setHardLimit(long tokens, String period);
 
     // Task Manager
     String getActiveTasks(); // JSON list of active tasks
@@ -322,8 +368,9 @@ void executeSystemAction(String actionId, String paramsJson);
 
 // Emergency stop
 void showTaskManager();
-void hideTaskManager();
 ```
+
+Note: `hideTaskManager()` removed -- modal is only dismissed by user interaction (tap resume/outside), never programmatically.
 
 ## Out of Scope
 
@@ -334,3 +381,4 @@ void hideTaskManager();
 - GMS auto-installation in OOBE
 - Cache system
 - Advanced agent actions beyond the four listed
+- Models that don't support tool calling
