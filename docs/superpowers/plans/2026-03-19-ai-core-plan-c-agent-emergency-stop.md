@@ -441,7 +441,7 @@ git commit -m "feat: add executeSystemAction AIDL, register actions on startup"
 **Files:**
 - Create: `packages/apps/DollOSService/src/org/dollos/service/taskmanager/AITask.kt`
 
-- [ ] **Step 1: Create AITask data class**
+- [x] **Step 1: Create AITask data class**
 
 ```kotlin
 package org.dollos.service.taskmanager
@@ -504,7 +504,7 @@ data class AITask(
 }
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add src/org/dollos/service/taskmanager/
@@ -523,7 +523,7 @@ git commit -m "feat: add AITask data model for Task Manager"
 - Create: `packages/apps/DollOSService/res/layout/item_ai_task.xml`
 - Modify: `packages/apps/DollOSService/AndroidManifest.xml`
 
-- [ ] **Step 1: Create activity_task_manager.xml**
+- [x] **Step 1: Create activity_task_manager.xml**
 
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
@@ -598,7 +598,7 @@ git commit -m "feat: add AITask data model for Task Manager"
 </FrameLayout>
 ```
 
-- [ ] **Step 2: Create item_ai_task.xml**
+- [x] **Step 2: Create item_ai_task.xml**
 
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
@@ -670,7 +670,7 @@ git commit -m "feat: add AITask data model for Task Manager"
 </LinearLayout>
 ```
 
-- [ ] **Step 3: Create TaskManagerActivity.kt**
+- [x] **Step 3: Create TaskManagerActivity.kt**
 
 ```kotlin
 package org.dollos.service.taskmanager
@@ -802,7 +802,7 @@ class TaskManagerActivity : Activity() {
 }
 ```
 
-- [ ] **Step 4: Add TaskManagerActivity to AndroidManifest.xml**
+- [x] **Step 4: Add TaskManagerActivity to AndroidManifest.xml**
 
 Add inside `<application>`:
 
@@ -816,7 +816,7 @@ Add inside `<application>`:
     android:showOnLockScreen="true" />
 ```
 
-- [ ] **Step 5: Create button_primary_background.xml drawable**
+- [x] **Step 5: Create button_primary_background.xml drawable**
 
 Create `packages/apps/DollOSService/res/drawable/button_primary_background.xml`:
 
@@ -833,11 +833,11 @@ Create `packages/apps/DollOSService/res/drawable/button_primary_background.xml`:
 </ripple>
 ```
 
-- [ ] **Step 6: Add RecyclerView dependency to Android.bp**
+- [x] **Step 6: Add RecyclerView dependency to Android.bp**
 
 Add `"androidx.recyclerview_recyclerview"` to `static_libs`.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add -A
@@ -854,7 +854,7 @@ git commit -m "feat: add Task Manager Activity with emergency stop UI"
 - Create: `vendor/dollos/overlay/frameworks/base/core/res/res/values/config.xml`
 - Modify: `vendor/dollos/dollos_bluejay.mk`
 
-- [ ] **Step 1: Create resource overlay**
+- [x] **Step 1: Create resource overlay**
 
 Create `vendor/dollos/overlay/frameworks/base/core/res/res/values/config.xml`:
 
@@ -867,7 +867,7 @@ Create `vendor/dollos/overlay/frameworks/base/core/res/res/values/config.xml`:
 </resources>
 ```
 
-- [ ] **Step 2: Add overlay to product makefile**
+- [x] **Step 2: Add overlay to product makefile**
 
 Add to `vendor/dollos/dollos_bluejay.mk` (add or update PRODUCT_PACKAGE_OVERLAYS):
 
@@ -876,7 +876,7 @@ Add to `vendor/dollos/dollos_bluejay.mk` (add or update PRODUCT_PACKAGE_OVERLAYS
 PRODUCT_PACKAGE_OVERLAYS += vendor/dollos/overlay
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 cd ~/Desktop/DollOS-build/vendor/dollos
@@ -893,7 +893,7 @@ git commit -m "feat: configure power button double-click to launch AI Task Manag
 **Files:**
 - Modify: `packages/apps/DollOSService/privapp-permissions-dollos-service.xml`
 
-- [ ] **Step 1: Update privapp-permissions**
+- [x] **Step 1: Update privapp-permissions**
 
 Add to the existing permissions file:
 
@@ -907,7 +907,7 @@ Add to the existing permissions file:
 <permission name="android.permission.SYSTEM_ALERT_WINDOW" />
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add privapp-permissions-dollos-service.xml
