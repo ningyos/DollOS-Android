@@ -1,10 +1,10 @@
 # Upstream Tracking
 
-DollOS is a fork of GrapheneOS (AOSP 16). This document describes the process for pulling upstream GrapheneOS releases into the DollOS fork.
+DollOS is based on AOSP 16. This document describes the process for pulling upstream AOSP releases into the DollOS build.
 
 ## Overview
 
-GrapheneOS publishes tagged releases on a regular cadence. DollOS must track these releases to receive security patches, driver updates, and base OS improvements. Merge conflicts that touch DollOS-specific patches require human review and resolution; they cannot be automated safely.
+Google publishes AOSP release tags on a regular cadence. DollOS must track these releases to receive security patches and platform improvements. Since DollOS uses `local_manifests` (not a full manifest fork), upstream updates are straightforward — only the `repo init` branch/tag needs to change, and conflicts are limited to DollOS's single `frameworks/base` patch.
 
 ---
 
@@ -12,47 +12,47 @@ GrapheneOS publishes tagged releases on a regular cadence. DollOS must track the
 
 The manual process is used until CI automation is in place.
 
-### Step 1 — Check for a New GrapheneOS Release
+### Step 1 — Check for a New AOSP Release
 
-Monitor the GrapheneOS release page:
+Monitor the AOSP release tags:
 
 ```
-https://grapheneos.org/releases
+https://source.android.com/docs/setup/reference/build-numbers
 ```
 
-Alternatively, watch the GrapheneOS GitHub organization for new tags on the manifest repository.
+Look for new `android-16.x.x_rN` tags that include security patches for the Pixel 6a (bluejay).
 
-### Step 2 — Update the Manifest Branch
+### Step 2 — Update the repo init Tag
 
-Edit the DollOS manifest to point to the new GrapheneOS release tag or branch. Update the `revision` attributes in `.repo/manifests/default.xml` (or the equivalent manifest file) to the new upstream tag.
+```bash
+cd ~/Projects/DollOS-build
+repo init -b android-16.x.x_rN
+```
+
+Replace `android-16.x.x_rN` with the new tag.
 
 ### Step 3 — Sync the Source Tree
 
 ```bash
-cd ~/dollos-build
 repo sync -c -j$(nproc) --no-tags
 ```
 
-If `repo sync` reports conflicts, stop and resolve them before proceeding.
+If `repo sync` reports conflicts in DollOS repos, stop and resolve them before proceeding.
 
-### Step 4 — Resolve Conflicts
+### Step 4 — Rebase DollOS Patches
 
-For each project that reports a merge conflict:
+DollOS maintains minimal patches on top of AOSP:
 
-1. Navigate into the project directory.
-2. Run `git status` to identify conflicting files.
-3. Edit the conflicting files to integrate both the upstream change and the DollOS-specific patch.
-4. Mark the conflict resolved with `git add <file>`.
-5. Commit the resolution with a message referencing the upstream tag.
+- **`frameworks/base`**: AI Activity and AI Stop buttons in the power menu (if using a forked branch)
 
-Conflict resolution requires human judgment. Do not automate or skip this step.
+If the patch does not apply cleanly to the new AOSP tag, manually resolve the conflict and update the DollOS fork.
 
 ### Step 5 — Build
 
 ```bash
-cd ~/dollos-build
+cd ~/Projects/DollOS-build
 source build/envsetup.sh
-lunch aosp_bluejay-user
+lunch dollos_bluejay-cur-userdebug
 m -j$(nproc)
 ```
 
@@ -64,16 +64,15 @@ Flash the build to a test device and verify:
 
 - Device boots successfully.
 - Verified Boot passes (no orange or red state).
-- OTA update mechanism works.
-- DollOS-specific features are functional.
+- DollOS-specific features are functional (DollOSService, SetupWizard, AI buttons in power menu).
 - No regressions in core system apps.
 
 ### Step 7 — Tag the Release
 
-After passing tests, tag the DollOS release in the manifest repository:
+After passing tests, tag the release:
 
 ```bash
-git tag dollos-<upstream-tag>-<dollos-patch-version>
+git tag dollos-<aosp-tag>-<dollos-patch-version>
 git push origin --tags
 ```
 
@@ -83,25 +82,25 @@ git push origin --tags
 
 The following automation is planned once the manual process is stable.
 
-### Daily Release Check (GitHub Action)
+### Release Check (GitHub Action)
 
-A scheduled GitHub Action runs daily to check whether GrapheneOS has published a new release tag.
+A scheduled GitHub Action runs periodically to check whether Google has published a new AOSP release tag.
 
 ```
-Trigger: schedule (cron, daily)
+Trigger: schedule (cron)
 Steps:
-  1. Fetch the latest tag from the GrapheneOS manifest repository.
+  1. Fetch the latest android-16 tag from AOSP.
   2. Compare against the last known tag stored in the repository.
   3. If a new tag is found, open a tracking issue and proceed to the next step.
 ```
 
 ### Auto-Build on New Release
 
-When the daily check detects a new upstream release:
+When the check detects a new upstream release:
 
 ```
 Steps:
-  1. Update manifest revision to the new tag.
+  1. Update repo init to the new tag.
   2. Run repo sync on a hosted build runner.
   3. Attempt the build with `m -j$(nproc)`.
   4. If the build succeeds, upload the artifact for manual QA.
@@ -113,7 +112,7 @@ Steps:
 The CI pipeline notifies the developer in the following situations:
 
 - A new upstream release is detected.
-- Merge conflicts are found during `repo sync` (requires human intervention).
+- Merge conflicts are found (requires human intervention).
 - The build fails.
 - The build succeeds and artifacts are ready for QA.
 
@@ -121,4 +120,4 @@ Notification channels: GitHub issue comment, email, or a webhook to a chat servi
 
 ### Limitation
 
-Merge conflicts between upstream changes and DollOS patches cannot be resolved automatically. When conflicts are detected, the CI pipeline stops and waits for a developer to resolve them manually using the process described in Step 4 above.
+Merge conflicts between upstream changes and DollOS patches cannot be resolved automatically. When conflicts are detected, the CI pipeline stops and waits for a developer to resolve them manually.

@@ -32,21 +32,20 @@ DollOS requires the following 9 APK signing keys. Each key is generated with the
 | networkstack | Network stack module |
 | bluetooth | Bluetooth module |
 | sdk_sandbox | SDK sandbox |
-| gmscompat_lib | GMS compatibility layer |
 | nfc | NFC module |
 
 Generate each key (run once, from the AOSP source root):
 
 ```bash
-for key in releasekey platform shared media networkstack bluetooth sdk_sandbox gmscompat_lib nfc; do
+for key in releasekey platform shared media networkstack bluetooth sdk_sandbox nfc; do
     development/tools/make_key ~/dollos-keys/bluejay/$key \
         '/C=US/ST=California/L=Mountain View/O=DollOS/OU=Android/CN=DollOS/emailAddress=keys@example.com'
 done
 ```
 
-You will be prompted for a password for each key. All key passwords MUST be identical. This is a hard requirement of the GrapheneOS build scripts.
+You will be prompted for a password for each key. All key passwords MUST be identical (AOSP build script requirement).
 
-Note: Verify the required key list against `finalize.sh` at your fork point. The set of required keys may change between GrapheneOS releases.
+Note: Verify the required key list against the AOSP build scripts at your tag. The set of required keys may change between AOSP releases.
 
 ## AVB (Android Verified Boot) Key
 
