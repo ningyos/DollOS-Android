@@ -16,11 +16,14 @@ DollOS 是一個基於 **GrapheneOS Android 16** 的 AI 伴侶手機作業系統
 
 ```
 ~/Projects/DollOS/              ← 主 repo（文件、設計、計畫）
+~/Projects/DollOSAIService/     ← AI Service Gradle 專案（獨立 repo）
 ~/Projects/DollOS-build/        ← GrapheneOS source tree（repo sync）
   ├── .repo/local_manifests/dollos.xml   ← DollOS 自訂 repo
   ├── packages/apps/DollOSService/       ← 系統服務
   ├── packages/apps/DollOSSetupWizard/   ← OOBE 設定精靈
+  ├── packages/apps/Settings/            ← 有修改（AI Settings 頁面）
   ├── frameworks/base/                   ← 有修改（電源選單 AI 按鈕）
+  ├── external/DollOSAIService/          ← AI Service（local_manifests sync）
   ├── device/dollos/bluejay/             ← Pixel 6a device config
   ├── vendor/dollos/                     ← vendor overlay + SELinux
   └── build/make/                        ← build system（移除 SetupWizard2）
@@ -32,14 +35,61 @@ DollOS 是一個基於 **GrapheneOS Android 16** 的 AI 伴侶手機作業系統
 |------|------|------|
 | `DollOSService` | `packages/apps/DollOSService` | 系統服務（Binder AIDL），action system，task manager |
 | `DollOSSetupWizard` | `packages/apps/DollOSSetupWizard` | OOBE 9 頁設定精靈 |
+| `DollOSAIService` | `external/DollOSAIService` | AI 服務（Gradle 專案 + AIDL + prebuilt APK） |
 | `vendor_dollos` | `vendor/dollos` | framework overlay（電源選單）、SELinux policy |
 | `device_dollos_bluejay` | `device/dollos/bluejay` | Pixel 6a device makefile + SELinux |
 
 **非 DollOS repo 但有修改：**
 | Repo | 改動 |
 |------|------|
-| `frameworks/base` | GlobalActionsDialogLite 加入 AI Activity + AI Stop 按鈕、icon、strings |
+| `frameworks/base` | GlobalActionsDialogLite 加入 AI Activity + AI Stop 按鈕 |
+| `packages/apps/Settings` | 原生 AI Settings 頁面（DollOSAISettingsFragment + stats card + 長條圖） |
 | `build/make` | 從 PRODUCT_PACKAGES 移除 SetupWizard2 |
+
+## DollOSAIService（AI Core Plan A）
+
+獨立 Gradle 專案，prebuilt APK 整合進 AOSP。AIDL 在 repo 根目錄，Gradle 和 AOSP 共用，零複製。
+
+**架構：**
+```
+ningyos/DollOSAIService/
+  aidl/org/dollos/ai/           ← AIDL（唯一 source of truth）
+  Android.bp                    ← dollos-ai-aidl + android_app_import
+  app/                          ← Gradle app module
+  prebuilt/DollOSAIService.apk  ← Gradle build 產出
+```
+
+**功能：**
+- **LLM Client** — 多模型（Claude, OpenAI, Grok, Custom），suspend API，SSE streaming，coroutine delay retry
+- **Personality** — 5 欄位（backstory, directive, temperature/dynamism, address, language）
+- **Usage Tracking** — Room SQLite，90 天自動清理，daily/monthly 統計
+- **Budget** — warning threshold + hard limit，Android notification
+- **Tool Calling** — 透過 DollOSService 執行 system actions，確認流程（60s timeout）
+- **AI Stop** — BroadcastReceiver 接收 `ACTION_AI_STOP`，呼叫 `pauseAll()`
+
+**AIDL 介面：** `IDollOSAIService` + `IDollOSAICallback`
+
+**Build 流程：**
+```bash
+cd ~/Projects/DollOSAIService
+./gradlew assembleRelease
+cp app/build/outputs/apk/release/app-release-unsigned.apk prebuilt/DollOSAIService.apk
+# 同步到 AOSP tree
+rsync -av --exclude='.gradle' --exclude='build' --exclude='local.properties' \
+    ~/Projects/DollOSAIService/ ~/Projects/DollOS-build/external/DollOSAIService/
+```
+
+## AI Settings（原生整合在 Settings app）
+
+在 `packages/apps/Settings` 裡的 `DollOSAISettingsFragment`（DashboardFragment），完全整合在系統設定中。
+
+**頁面結構：**
+1. **Stats Card** — 今日/本月 token 數 + active model + 7 天長條圖（UsageBarChartView）
+2. **Personality** — Backstory, Response directive, Temperature slider, Address, Language
+3. **API & Model** — Provider（Claude/OpenAI/Grok/Custom）, API Key, Model
+4. **Budget** — Warning threshold + period, Hard limit + period
+
+透過 AIDL bind 到 DollOSAIService 讀寫設定。
 
 ## OOBE 頁面流程
 
@@ -47,29 +97,21 @@ DollOS 是一個基於 **GrapheneOS Android 16** 的 AI 伴侶手機作業系統
 welcome → theme → wifi → gms → model_download → api_key → personality → voice → complete
 ```
 
-- `model_download`, `api_key` 可跳過（`api_key` 跳過時直接到 `voice`）
-- `theme`: Light/Dark/Auto，用 `UiModeManager` 切換系統 night mode，Activity 透過 `onSaveInstanceState` 保持頁面位置
-- `gms`: sandboxed Google Play 開關（GrapheneOS 自帶）
-- `finishSetup()` 會設定 monochrome 系統色彩主題 + 標記 provisioned
+- `api_key` / `personality` 頁面透過 DollOSAIService AIDL 設定（無 fallback）
+- `theme`: Light/Dark/Auto，用 `UiModeManager`
+- `gms`: sandboxed Google Play 開關
+- `finishSetup()` 設定 monochrome 系統色彩 + provisioned
 
 ## DollOSService 功能
 
 - **AIDL 介面:** `IDollOSService`
-  - API Key 管理、GMS opt-in、personality 設定
-  - System action 執行、task manager
 - **Action System:** OpenApp, SetAlarm, ToggleWiFi, ToggleBluetooth
 - **Task Manager Activity:** 從電源選單 AI Activity 按鈕開啟
-  - 半透明 modal，底部卡片顯示 AI 任務列表
-  - 點擊暗色背景或按返回鍵關閉
-  - Resume All / Cancel 按鈕（待接上 DollOSAIService）
 
 ## 電源選單（frameworks/base 修改）
 
-在 `GlobalActionsDialogLite.java` 加入兩個自訂按鈕：
-- **AI Activity** (`aiactivity`) — 開啟 `TaskManagerActivity`，icon: `ic_ai_activity`（smart_toy）
-- **AI Stop** (`aistop`) — 發送 `org.dollos.service.ACTION_AI_STOP` broadcast + toast，icon: `ic_ai_stop`（cancel）
-
-Overlay 設定在 `vendor/dollos/overlay/frameworks/base/core/res/res/values/config.xml`。
+- **AI Activity** (`aiactivity`) — 開啟 TaskManagerActivity
+- **AI Stop** (`aistop`) — broadcast + toast
 
 ## Build 指令
 
@@ -78,27 +120,27 @@ cd ~/Projects/DollOS-build
 source build/envsetup.sh
 lunch dollos_bluejay-bp2a-userdebug
 m -j$(nproc)                    # 全系統 build
-m DollOSSetupWizard -j$(nproc)  # 只 build SetupWizard
-m DollOSService -j$(nproc)      # 只 build Service
-m SystemUI -j$(nproc)           # 只 build SystemUI（電源選單改動）
+m Settings -j$(nproc)           # Settings（AI 設定頁）
+m DollOSSetupWizard -j$(nproc)  # OOBE
+m DollOSService -j$(nproc)      # 系統服務
+m DollOSAIService -j$(nproc)    # AI 服務（prebuilt）
+m SystemUI -j$(nproc)           # 電源選單
 ```
 
-**注意：** build 指令不能接 `| tail` 等 pipe，會導致 build 被 kill。背景執行用 `run_in_background`。
+**注意：** build 指令不能接 `| tail` 等 pipe。背景執行用 `run_in_background`。
 
 ## 刷機流程
 
 ```bash
 ADB=~/Projects/DollOS-build/out/host/linux-x86/bin/adb
-$ADB root
-$ADB remount          # 第一次需要 reboot 後再 remount
+$ADB root && $ADB remount
 
-# 推送單一模組
-$ADB push out/target/product/bluejay/system_ext/priv-app/DollOSSetupWizard/DollOSSetupWizard.apk \
-    /system_ext/priv-app/DollOSSetupWizard/DollOSSetupWizard.apk
-
-# 或同步整個 system 分區（frameworks/base 改動需要）
-ANDROID_PRODUCT_OUT=~/Projects/DollOS-build/out/target/product/bluejay $ADB sync system
+# 同步整個分區
 ANDROID_PRODUCT_OUT=~/Projects/DollOS-build/out/target/product/bluejay $ADB sync system_ext
+
+# 或推送單一模組
+$ADB push out/target/product/bluejay/system_ext/priv-app/Settings/Settings.apk \
+    /system_ext/priv-app/Settings/Settings.apk
 
 $ADB reboot
 ```
@@ -114,16 +156,18 @@ $ADB reboot
 | `docs/superpowers/plans/2026-03-19-ai-core-plan-b-*.md` | Memory + Conversation |
 | `docs/superpowers/plans/2026-03-19-ai-core-plan-c-*.md` | Agent + Emergency Stop |
 | `docs/superpowers/plans/2026-03-19-ai-core-plan-d-*.md` | 整合計畫 |
-| `docs/superpowers/plans/2026-03-22-oobe-theme-page.md` | OOBE 主題頁實作計畫 |
 
 ## 開發階段
 
-1. **DollOS Base** — 基本完成
-2. **AI Core** — 已設計，未開始實作（Plan A-D 已寫好）← 下一步
-3. **Avatar System** — 未來
-4. **Voice Pipeline** — 未來（STT/TTS/Wake Word）
-5. **Agent System** — 未來
-6. **System UI** — 未來
+1. **DollOS Base** — 完成
+2. **AI Core Plan A** — 完成（LLM client, personality, usage, settings）
+3. **AI Core Plan B** — 下一步（Memory + Conversation Engine）
+4. **AI Core Plan C** — 未開始（Agent + Emergency Stop）
+5. **AI Core Plan D** — 未開始（整合測試）
+6. **Avatar System** — 未來
+7. **Voice Pipeline** — 未來（STT/TTS/Wake Word）
+8. **Agent System** — 未來
+9. **System UI** — 未來
 
 ## 待辦
 
@@ -131,10 +175,13 @@ $ADB reboot
 
 ## 重要決策記錄
 
-- **GrapheneOS base 不遷移** — 曾嘗試遷移到純 AOSP，失敗後決定留在 GrapheneOS
+- **GrapheneOS base 不遷移** — 留在 GrapheneOS
 - **Sandboxed GMS** — GrapheneOS 自帶，OOBE 提供開關
-- **GrapheneOS SetupWizard2 + InfoApp** — 已從 build 和裝置移除
-- **系統色彩** — 預設 monochrome（黑白灰），OOBE finishSetup 時寫入
-- **手勢導航** — 預設開啟
-- **ADB + Developer Options** — userdebug build 預設開啟
-- **電源選單** — 加入 AI Activity 和 AI Stop 兩個按鈕
+- **GrapheneOS SetupWizard2 + InfoApp** — 已移除
+- **系統色彩** — 預設 monochrome
+- **AI Settings** — 原生整合在 Settings app（不是獨立 Activity）
+- **DollOSAIService 架構** — 合併 repo（AIDL + Gradle + AOSP 整合在同一個 repo）
+- **不實作 fallback** — 新介面直接取代，無舊路徑保留
+- **UsageTracker** — 用 Room SQLite（不是 SharedPreferences）
+- **LLM Client** — suspend API + coroutine delay retry（不是 Thread.sleep）
+- **寫程式用 subagent 並行**
