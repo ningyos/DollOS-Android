@@ -59,13 +59,27 @@ ningyos/DollOSAIService/
   prebuilt/DollOSAIService.apk  ← Gradle build 產出
 ```
 
-**功能：**
+**功能（Plan A — LLM + Personality）：**
 - **LLM Client** — 多模型（Claude, OpenAI, Grok, Custom），suspend API，SSE streaming，coroutine delay retry
 - **Personality** — 5 欄位（backstory, directive, temperature/dynamism, address, language）
 - **Usage Tracking** — Room SQLite，90 天自動清理，daily/monthly 統計
 - **Budget** — warning threshold + hard limit，Android notification
 - **Tool Calling** — 透過 DollOSService 執行 system actions，確認流程（60s timeout）
 - **AI Stop** — BroadcastReceiver 接收 `ACTION_AI_STOP`，呼叫 `pauseAll()`
+
+**功能（Plan B — Memory + Conversation）：**
+- **Memory System** — memsearch 架構，三層 Markdown 記憶（CORE/DAILY/DEEP）
+  - ObjectBox HNSW vector search（384 dims）+ Room FTS4 BM25 keyword search
+  - Hybrid search: RRF（70% vector + 30% BM25，union）
+  - SHA-256 content hash dedup，1500 char chunking by heading
+  - Serialized write queue + pending_writes.json recovery
+  - Cloud embedding（OpenAI text-embedding-3-small）+ local placeholder
+  - Memory export/import via ZIP + ParcelFileDescriptor
+- **Conversation Engine** — 日期分段對話，Room 持久化
+  - 多輪對話（sendMessage 現在保持 context）
+  - Context compression at 75% capacity（async，foreground model）
+  - Memory context 自動注入 LLM system prompt
+  - Idle timer（5 min）觸發背景記憶提取
 
 **AIDL 介面：** `IDollOSAIService` + `IDollOSAICallback`
 
@@ -161,8 +175,8 @@ $ADB reboot
 
 1. **DollOS Base** — 完成
 2. **AI Core Plan A** — 完成（LLM client, personality, usage, settings）
-3. **AI Core Plan B** — 下一步（Memory + Conversation Engine）
-4. **AI Core Plan C** — 未開始（Agent + Emergency Stop）
+3. **AI Core Plan B** — 完成（Memory + Conversation Engine）
+4. **AI Core Plan C** — 下一步（Agent + Emergency Stop）
 5. **AI Core Plan D** — 未開始（整合測試）
 6. **Avatar System** — 未來
 7. **Voice Pipeline** — 未來（STT/TTS/Wake Word）
