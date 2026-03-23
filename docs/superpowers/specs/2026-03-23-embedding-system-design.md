@@ -101,7 +101,55 @@ void setRetrievalMode(String mode);  // "hybrid" or "fts4"
 String getRetrievalMode();
 ```
 
+## Settings UI Restructure
+
+Restructure AI Settings from flat layout to categorized sub-pages. Existing preferences (Stats Card, Personality) stay on the main page. Other settings move to sub-pages.
+
+### New structure
+
+```
+Settings → AI (DollOSAISettingsFragment — main page)
+  ├─ Stats Card (inline, stays on main page)
+  ├─ Personality Settings (inline, stays on main page)
+  │    ├─ Backstory
+  │    ├─ Response Directive
+  │    ├─ Dynamism
+  │    ├─ Address
+  │    └─ Language Preference
+  ├─ LLM Settings → (sub-page: DollOSLLMSettingsFragment)
+  │    ├─ Foreground Provider / API Key / Model
+  │    └─ Background Provider / API Key / Model
+  ├─ Memory Settings → (sub-page: DollOSMemorySettingsFragment) NEW
+  │    ├─ Embedding Source (cloud / local switch)
+  │    ├─ Cloud Embedding Config (URL, API key, model, dimensions) — visible when source=cloud
+  │    ├─ Search Mode (hybrid / keyword only)
+  │    ├─ Vector Store Status (current model, chunk count, dimension)
+  │    ├─ Rebuild Vector Store (button, shows progress)
+  │    └─ Export / Import Memory
+  └─ Budget Settings → (sub-page: DollOSBudgetSettingsFragment)
+       ├─ Warning Threshold
+       └─ Hard Limit
+```
+
+### Settings files
+
+```
+packages/apps/Settings/
+  src/com/android/settings/dollos/
+    DollOSAISettingsFragment.java        -- modify: remove LLM/Budget prefs, add sub-page entries
+    DollOSLLMSettingsFragment.java       -- new: LLM provider/model config
+    DollOSMemorySettingsFragment.java    -- new: embedding, search mode, vector store, export/import
+    DollOSBudgetSettingsFragment.java    -- new: warning/hard limit
+  res/xml/
+    dollos_ai_settings.xml               -- modify: keep stats + personality, add sub-page links
+    dollos_llm_settings.xml              -- new: LLM preferences
+    dollos_memory_settings.xml           -- new: memory/embedding preferences
+    dollos_budget_settings.xml           -- new: budget preferences
+```
+
 ## Files Changed
+
+### DollOSAIService (embedding backend)
 
 ```
 Modified:
@@ -111,7 +159,7 @@ Modified:
   memory/MemorySearchEngine.kt        -- remove HNSW search path, filter by modelId, brute-force only
   memory/MemoryManager.kt             -- modelId tracking, rebuild trigger with notification, switch detection
   DollOSAIServiceImpl.kt              -- new AIDL method implementations
-  aidl/IDollOSAIService.aidl          -- add setCloudEmbeddingConfig, rebuildVectorStore
+  aidl/IDollOSAIService.aidl          -- add setCloudEmbeddingConfig, rebuildVectorStore, retrieval mode
 
 New:
   memory/WordPieceTokenizer.kt        -- tokenizer for ONNX models
@@ -121,6 +169,22 @@ Dependencies:
 
 System image:
   prebuilt/models/                    -- default ONNX embedding model (bundled at flash time)
+```
+
+### Settings app (UI restructure)
+
+```
+Modified:
+  DollOSAISettingsFragment.java       -- slim down to stats + personality + sub-page links
+  dollos_ai_settings.xml              -- remove LLM/budget prefs, add sub-page entries
+
+New:
+  DollOSLLMSettingsFragment.java      -- LLM config sub-page
+  DollOSMemorySettingsFragment.java   -- memory/embedding/search sub-page
+  DollOSBudgetSettingsFragment.java   -- budget sub-page
+  dollos_llm_settings.xml
+  dollos_memory_settings.xml
+  dollos_budget_settings.xml
 ```
 
 ## Out of Scope
