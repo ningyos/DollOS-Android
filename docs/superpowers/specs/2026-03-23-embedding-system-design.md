@@ -72,6 +72,20 @@ Vector storage:
 - Rebuild can be cancelled (partial results kept, resume later)
 - If Markdown files haven't changed since last build for this model, SHA-256 dedup skips unchanged chunks
 
+## Retrieval Modes
+
+Two search modes:
+
+| Mode | Vector | FTS4 | When |
+|------|--------|------|------|
+| **Hybrid** (default) | Yes | Yes | Vector store exists for current model |
+| **FTS4 only** | No | Yes | Always available |
+
+- FTS4 is always functional — it indexes Markdown text directly, no embedding needed
+- Hybrid auto-degrades to FTS4 only when: vector store doesn't exist for current model, or rebuild is in progress
+- User/AI can explicitly request FTS4 only via search mode parameter (useful for exact keyword lookup)
+- AIDL: `setRetrievalMode(String mode)` — `"hybrid"` or `"fts4"`
+
 ## AIDL Changes
 
 Update `IDollOSAIService.aidl`:
@@ -83,6 +97,8 @@ String getEmbeddingSource();
 // Add:
 void setCloudEmbeddingConfig(String baseUrl, String apiKey, String model, int dimensions);
 void rebuildVectorStore();  // user-triggered rebuild
+void setRetrievalMode(String mode);  // "hybrid" or "fts4"
+String getRetrievalMode();
 ```
 
 ## Files Changed
