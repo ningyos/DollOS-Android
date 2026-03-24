@@ -228,9 +228,20 @@ Action {
 
 ### LLM Integration
 
-Uses LLM tool calling (function calling) to invoke actions. All registered Actions are provided to the LLM as available tools. LLM decides when to call which tool based on conversation context.
+Uses each provider's native tool calling format to invoke actions. All registered Actions are provided to the LLM as available tools. LLM decides when to call which tool based on conversation context.
 
-For models that don't support tool calling: not supported in v1, may add keyword-based fallback later.
+**Provider-native tool calling:**
+- Anthropic (Claude): `tools[]` in request, `tool_use` content block in response
+- OpenAI / Grok: `tools[]` with `function` type in request, `tool_calls` in response
+- Each provider's LLM client handles format conversion to/from internal `ToolCall` representation
+
+**DollOSAIService-side components:**
+- `ToolCallFormatter`: converts ActionRegistry tool descriptions into provider-specific `tools[]` format
+- `ToolCallParser`: parses provider-specific tool call responses into internal `ToolCall` data class
+- `AgentExecutor`: orchestrates tool call loop — check confirmRequired, call DollOSService.executeSystemAction(), feed result back to LLM
+- `sendMessage()` modified to support multi-turn tool calling (LLM may chain multiple tool calls)
+
+For models that don't support tool calling: not supported in v1.
 
 ### First Version Actions
 
@@ -375,11 +386,102 @@ void showTaskManager();
 
 Note: `hideTaskManager()` removed -- modal is only dismissed by user interaction (tap resume/outside), never programmatically.
 
+## Section 7: Background Work System (Event-Driven Architecture)
+
+### Overview
+
+The foreground AI transitions from a passive chat responder to an event-driven agent. All inputs (user messages, worker results, system events, schedules, internal events) flow through a unified Event Queue. The foreground AI processes events either piggybacked on user messages or autonomously during idle periods.
+
+### Event Queue
+
+```
+Event {
+    id: String
+    type: TEXT_MESSAGE | VOICE_MESSAGE | WORKER_RESULT | SCHEDULE | SYSTEM_EVENT | INTERNAL
+    priority: HIGH | NORMAL | LOW
+    payload: String (JSON)
+    timestamp: Long
+    source: String  // "user" / "worker:task_id" / "system:wifi" / "alarm:morning_routine"
+}
+```
+
+- TEXT_MESSAGE: user typed text, response via text UI
+- VOICE_MESSAGE: user spoke via STT, response via TTS + text display, AI adjusts style (shorter, conversational)
+- Queue is in-memory (ConcurrentLinkedQueue), not persisted to disk on restart
+- Exception: WORKER_RESULT persisted to Room (worker may complete before service restart)
+
+### Event Processing Model
+
+**Not a polling loop.** Two consumption paths:
+
+1. **User is chatting** -- events piggyback on sendMessage(). Before LLM call, inject pending events into context ("Background task X completed: [result]", "System event: WiFi disconnected"). AI handles everything in one response. Zero latency for user messages.
+
+2. **User is idle** -- idle timer triggers autonomous processing. AI reads pending events, decides actions (notify user, execute action, update memory, spawn worker). Triggered by: new HIGH priority event arriving, or idle timeout (configurable, e.g. 30s after last user interaction).
+
+### Background Worker Agent
+
+Workers are like Claude's subagents: spawned by foreground AI, schedule, or event trigger. They run independently, cannot interact with users, and report results back.
+
+**Characteristics:**
+- Uses background model (cheaper)
+- Cannot operate UI (no accessibility tree, no screenshots, no taps)
+- Can call system API actions (WiFi, Bluetooth, alarm, open app)
+- Visible in TaskManager (can be paused/cancelled)
+- confirmRequired actions execute without confirmation (task assignment implies authorization)
+
+**Authorization:**
+- Per-task action whitelist: foreground AI specifies allowed actions when spawning
+- Skill templates: predefined whitelist + behavior bundles (e.g. "morning_routine" skill allows set_alarm + open_app)
+- Actions outside whitelist are rejected, not queued for confirmation
+
+### Trigger Mechanisms
+
+| Trigger | Mechanism | v1 |
+|---------|-----------|-----|
+| Foreground AI dispatch | Direct spawn via API | Yes |
+| Schedule | AlarmManager (setExactAndAllowWhileIdle) | Yes |
+| AI internal event | Memory write complete, context compression complete | Yes |
+| System event | BroadcastReceiver (screen on/off, charging, WiFi) | Yes |
+| Programmable event | User-defined conditions combining system events | v2 |
+
+Schedule persistence: stored in Room, re-registered with AlarmManager on boot.
+
+### UI Operation Rights (v2)
+
+| State | AI UI Access | Mechanism |
+|-------|-------------|-----------|
+| User active (screen on + interacting) | Must ask permission first, user approves → AI takes over | Takeover overlay showing what AI is doing |
+| Screen locked / off | Free to operate | VirtualDisplay (no physical screen wake) |
+| User wakes screen during AI operation | Show "AI operating" overlay + current task description | User can interrupt or wait |
+
+v1: workers cannot operate UI. v2: full UI operation with VirtualDisplay and takeover mechanism.
+
+### Smart Notification (v2)
+
+AI proactively notifies users with context-aware delivery:
+- Silent notification (no sound/vibration) -- low priority, user is busy
+- Normal notification -- standard priority
+- Voice announcement (TTS) -- high priority, user is idle / driving
+- Delivery method chosen based on: Do Not Disturb state, location, user preferences, time of day
+
+## Implementation Status (2026-03-24)
+
+| Plan | Status | Description |
+|------|--------|-------------|
+| Plan A | Complete | LLM client, personality, usage tracking, settings |
+| Plan B | Complete | Memory system (ObjectBox + FTS4), conversation engine, context compression |
+| Plan C | Complete | Agent system, action execution, emergency stop, tool calling |
+| Plan D v1 | Complete | Background work system: event queue, workers, triggers |
+| Embedding | Complete | Cloud (configurable endpoint) + Local (ONNX Runtime), per-model vector store, retrieval modes |
+| Settings UI | Complete | Restructured: Stats + Personality main page, LLM / Memory / Budget sub-pages |
+| Plan D v2 | Designed | UI operation (VirtualDisplay), smart notification, programmable events |
+
 ## Out of Scope
 
 - AI Launcher (separate sub-project -- System UI)
 - Avatar system (separate sub-project)
-- Voice pipeline / STT / TTS (separate sub-project)
+- Voice pipeline / STT / TTS (separate sub-project, but VOICE_MESSAGE event type reserved)
+- Wake word (replaces original power-key PTT plan)
 - API key encryption (deferred)
 - GMS auto-installation in OOBE
 - Cache system

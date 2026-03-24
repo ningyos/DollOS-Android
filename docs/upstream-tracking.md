@@ -1,10 +1,10 @@
 # Upstream Tracking
 
-DollOS is based on AOSP 16. This document describes the process for pulling upstream AOSP releases into the DollOS build.
+DollOS is based on GrapheneOS Android 16. This document describes the process for pulling upstream GrapheneOS releases into the DollOS build.
 
 ## Overview
 
-Google publishes AOSP release tags on a regular cadence. DollOS must track these releases to receive security patches and platform improvements. Since DollOS uses `local_manifests` (not a full manifest fork), upstream updates are straightforward — only the `repo init` branch/tag needs to change, and conflicts are limited to DollOS's single `frameworks/base` patch.
+GrapheneOS publishes release tags on a regular cadence, incorporating AOSP security patches along with GrapheneOS-specific hardening. DollOS must track these releases to receive security patches and platform improvements. Since DollOS uses `local_manifests` on top of the official GrapheneOS manifest (not a full manifest fork), upstream updates are straightforward — only the `repo init` branch/tag needs to change, and conflicts are limited to DollOS's own repos.
 
 ---
 
@@ -12,24 +12,25 @@ Google publishes AOSP release tags on a regular cadence. DollOS must track these
 
 The manual process is used until CI automation is in place.
 
-### Step 1 — Check for a New AOSP Release
+### Step 1 — Check for a New GrapheneOS Release
 
-Monitor the AOSP release tags:
+Monitor the GrapheneOS release tags:
 
 ```
-https://source.android.com/docs/setup/reference/build-numbers
+https://grapheneos.org/releases
+https://github.com/GrapheneOS/platform_manifest/tags
 ```
 
-Look for new `android-16.x.x_rN` tags that include security patches for the Pixel 6a (bluejay).
+Look for new release tags that include security patches for the Pixel 6a (bluejay).
 
 ### Step 2 — Update the repo init Tag
 
 ```bash
 cd ~/Projects/DollOS-build
-repo init -b android-16.x.x_rN
+repo init -u https://github.com/GrapheneOS/platform_manifest.git -b <new-tag>
 ```
 
-Replace `android-16.x.x_rN` with the new tag.
+Replace `<new-tag>` with the new GrapheneOS release tag.
 
 ### Step 3 — Sync the Source Tree
 
@@ -41,18 +42,18 @@ If `repo sync` reports conflicts in DollOS repos, stop and resolve them before p
 
 ### Step 4 — Rebase DollOS Patches
 
-DollOS maintains minimal patches on top of AOSP:
+DollOS maintains minimal patches on top of GrapheneOS:
 
 - **`frameworks/base`**: AI Activity and AI Stop buttons in the power menu (if using a forked branch)
 
-If the patch does not apply cleanly to the new AOSP tag, manually resolve the conflict and update the DollOS fork.
+If the patch does not apply cleanly to the new GrapheneOS release, manually resolve the conflict and update the DollOS fork.
 
 ### Step 5 — Build
 
 ```bash
 cd ~/Projects/DollOS-build
 source build/envsetup.sh
-lunch dollos_bluejay-cur-userdebug
+lunch dollos_bluejay-bp2a-userdebug
 m -j$(nproc)
 ```
 
@@ -84,12 +85,12 @@ The following automation is planned once the manual process is stable.
 
 ### Release Check (GitHub Action)
 
-A scheduled GitHub Action runs periodically to check whether Google has published a new AOSP release tag.
+A scheduled GitHub Action runs periodically to check whether GrapheneOS has published a new release tag.
 
 ```
 Trigger: schedule (cron)
 Steps:
-  1. Fetch the latest android-16 tag from AOSP.
+  1. Fetch the latest release tag from GrapheneOS platform_manifest.
   2. Compare against the last known tag stored in the repository.
   3. If a new tag is found, open a tracking issue and proceed to the next step.
 ```
@@ -120,4 +121,4 @@ Notification channels: GitHub issue comment, email, or a webhook to a chat servi
 
 ### Limitation
 
-Merge conflicts between upstream changes and DollOS patches cannot be resolved automatically. When conflicts are detected, the CI pipeline stops and waits for a developer to resolve them manually.
+Merge conflicts between upstream GrapheneOS changes and DollOS patches cannot be resolved automatically. When conflicts are detected, the CI pipeline stops and waits for a developer to resolve them manually.

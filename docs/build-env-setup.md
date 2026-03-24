@@ -1,6 +1,6 @@
 # Build Environment Setup
 
-This guide covers setting up a build environment for compiling DollOS, which is based on AOSP 16 for Pixel devices.
+This guide covers setting up a build environment for compiling DollOS, which is based on GrapheneOS Android 16 for Pixel devices.
 
 ## System Requirements
 
@@ -92,7 +92,7 @@ Use the following layout to keep build artifacts and signing keys organized:
 
 ```
 ~/Projects/DollOS/          - Main repo (docs, design specs)
-~/Projects/DollOS-build/    - AOSP source tree and all build output
+~/Projects/DollOS-build/    - GrapheneOS source tree and all build output
 ~/dollos-keys/              - Signing keys (see docs/key-management.md)
 ```
 
@@ -105,13 +105,13 @@ mkdir -p ~/dollos-keys
 
 ## Initialize the Source Tree
 
-DollOS uses the official AOSP manifest with a `local_manifests` overlay to add DollOS-specific repositories.
+DollOS uses the official GrapheneOS manifest with a `local_manifests` overlay to add DollOS-specific repositories.
 
 ```bash
 cd ~/Projects/DollOS-build
 
-# Use the official AOSP manifest (Android 16)
-repo init -u https://android.googlesource.com/platform/manifest -b android-16.0.0_r2 --depth=1
+# Use the official GrapheneOS manifest (Android 16)
+repo init -u https://github.com/GrapheneOS/platform_manifest.git -b 16 --depth=1
 ```
 
 Create the DollOS local manifest to pull in custom repos:
@@ -122,16 +122,10 @@ cat > .repo/local_manifests/dollos.xml << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <manifest>
   <remote name="dollos" fetch="https://github.com/ningyos/" revision="refs/heads/main"/>
-
-  <!-- DollOS custom repos -->
-  <project path="packages/apps/DollOSService"
-           name="platform_packages_apps_DollOSService" remote="dollos"/>
-  <project path="packages/apps/DollOSSetupWizard"
-           name="platform_packages_apps_DollOSSetupWizard" remote="dollos"/>
-  <project path="vendor/dollos"
-           name="vendor_dollos" remote="dollos"/>
-  <project path="device/dollos/bluejay"
-           name="device_dollos_bluejay" remote="dollos"/>
+  <project path="packages/apps/DollOSService" name="DollOSService" remote="dollos"/>
+  <project path="packages/apps/DollOSSetupWizard" name="DollOSSetupWizard" remote="dollos"/>
+  <project path="vendor/dollos" name="vendor_dollos" remote="dollos"/>
+  <project path="device/dollos/bluejay" name="device_dollos_bluejay" remote="dollos"/>
 </manifest>
 EOF
 ```
@@ -142,31 +136,25 @@ Sync the source tree:
 repo sync -j$(nproc) --no-tags --no-clone-bundle
 ```
 
-This syncs the full AOSP source tree (~90GB+). Depending on network speed, this may take several hours.
+This syncs the full GrapheneOS source tree (~90GB+). Depending on network speed, this may take several hours.
 
 ## Extract Vendor Binaries
 
-AOSP 16 does not provide pre-packaged vendor binaries for Pixel devices. Extract them from an official factory image:
-
-1. Download the Pixel 6a (bluejay) factory image for Android 16 from https://developers.google.com/android/images
-2. Extract the archive and locate the vendor partition image
-3. Use the extraction scripts in the source tree:
+GrapheneOS handles vendor binary extraction via `adevtool`. No manual factory image download is needed.
 
 ```bash
 cd ~/Projects/DollOS-build
-
-# Extract vendor binaries from factory image
-# (exact steps depend on the factory image format; consult AOSP docs)
+vendor/adevtool/bin/adevtool generate-all -d bluejay
 ```
 
-Alternatively, if you have a Pixel 6a running stock Android 16, you can extract vendor binaries directly from the device using `adb`.
+This automatically fetches and extracts the required vendor binaries for the target device.
 
 ## Build
 
 ```bash
 cd ~/Projects/DollOS-build
 source build/envsetup.sh
-lunch dollos_bluejay-cur-userdebug
+lunch dollos_bluejay-bp2a-userdebug
 m -j$(nproc)
 ```
 
