@@ -1,8 +1,10 @@
 package org.dollos.service
 
 import android.app.Application
+import android.content.ComponentName
 import android.content.Context
 import android.content.SharedPreferences
+import android.provider.Settings
 import android.util.Log
 import org.dollos.service.action.ActionRegistry
 import org.dollos.service.action.OpenAppAction
@@ -38,5 +40,40 @@ class DollOSApp : Application() {
         actionRegistry.register(ToggleWifiAction())
         actionRegistry.register(ToggleBluetoothAction())
         Log.i(TAG, "Registered ${actionRegistry.getAll().size} actions")
+
+        enableAccessibilityService()
+    }
+
+    private fun enableAccessibilityService() {
+        val componentName = ComponentName(
+            this,
+            "org.dollos.service.accessibility.DollOSAccessibilityService"
+        ).flattenToString()
+
+        val enabledServices = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: ""
+
+        if (!enabledServices.contains(componentName)) {
+            val newValue = if (enabledServices.isEmpty()) {
+                componentName
+            } else {
+                "$enabledServices:$componentName"
+            }
+            Settings.Secure.putString(
+                contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+                newValue
+            )
+            Settings.Secure.putInt(
+                contentResolver,
+                Settings.Secure.ACCESSIBILITY_ENABLED,
+                1
+            )
+            Log.i(TAG, "Auto-enabled AccessibilityService: $componentName")
+        } else {
+            Log.d(TAG, "AccessibilityService already enabled")
+        }
     }
 }
