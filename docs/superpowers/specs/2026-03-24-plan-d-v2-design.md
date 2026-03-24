@@ -2,6 +2,8 @@
 
 ## Overview
 
+Detailed design for the "v2" features described in AI Core Design Spec Section 7 (UI Operation Rights, Smart Notification, Programmable Events). See `2026-03-19-ai-core-design.md`.
+
 Plan D v2 extends the background work system (Plan D v1) with three capabilities:
 
 1. **UI Operation** — AI can read and control the phone's UI via AccessibilityService, both on the physical screen (takeover mode) and a VirtualDisplay (background mode)
@@ -16,7 +18,11 @@ Lives inside the DollOSService app (system uid, platform cert). Shares process, 
 
 ### Auto-Enable
 
-DollOSApp.onCreate() writes to `Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES` to activate the service automatically. Platform cert grants write access to secure settings — no user interaction needed.
+DollOSApp.onCreate() writes to `Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES` to activate the service automatically. Platform cert grants write access to secure settings — no user interaction needed. If the service is killed or disabled by the system, DollOSApp re-enables it on next onCreate() call.
+
+### Permissions Note
+
+`TYPE_ACCESSIBILITY_OVERLAY` is an AccessibilityService-exclusive window type — no `SYSTEM_ALERT_WINDOW` permission needed. TakeoverManager uses `WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY` (not `TYPE_APPLICATION_OVERLAY`).
 
 ### Internal Modules
 
@@ -32,6 +38,8 @@ DollOSAccessibilityService
 ### Communication with DollOSAIService
 
 DollOSAIService sends UI operation commands via existing DollOSService Binder IPC. DollOSService forwards to AccessibilityService (same process, direct method call).
+
+AppEventMonitor (in DollOSService) pushes app open/close events to DollOSAIService via `IDollOSAICallback.onAppEvent(String packageName, String eventType)`. This enables RuleEngine (in DollOSAIService) to evaluate APP_FOREGROUND conditions without cross-process polling.
 
 ## Section 2: UI Operation Modes
 
@@ -49,10 +57,10 @@ DollOSAIService sends UI operation commands via existing DollOSService Binder IP
 
 **Power button interrupt:**
 
-- Single press → DollOSService detects KeyEvent.KEYCODE_POWER → show modal: "AI is operating: [task]" + "Cancel" / "Continue"
-  - Cancel → AI stops, remove overlay, release touch
+- Single press → AccessibilityService receives KEYCODE_POWER via `onKeyEvent()` (with `FLAG_REQUEST_FILTER_KEY_EVENTS` enabled in service config). During takeover state, AccessibilityService intercepts the single press and tells TakeoverManager to show interrupt modal. The modal is drawn as TYPE_ACCESSIBILITY_OVERLAY by TakeoverManager (same process).
+  - Cancel → AI stops, remove overlay, release touch, notify DollOSAIService via callback
   - Continue → dismiss modal, AI continues
-- Double press → existing emergency stop (stop all AI)
+- Double press → existing emergency stop via `config_doublePressOnPowerBehavior` (stop all AI). Double press is handled by PhoneWindowManager before it reaches AccessibilityService, so no conflict.
 
 **Visual feedback during takeover:**
 
@@ -68,7 +76,7 @@ DollOSAIService sends UI operation commands via existing DollOSService Binder IP
 
 1. `DisplayManager.createVirtualDisplay()` — create virtual screen (same resolution as physical)
 2. Launch target app on VirtualDisplay via `ActivityOptions.setLaunchDisplayId()`
-3. AccessibilityService reads node tree across all displays (Android 10+ multi-display accessibility)
+3. AccessibilityService reads node tree from VirtualDisplay via `getWindows()` filtered by displayId (API 30+, available on AOSP 16 / API 36). Note: `getRootInActiveWindow()` only returns the focused display — use `getWindows()` for multi-display.
 4. Screenshots via VirtualDisplay's Surface
 5. Destroy VirtualDisplay on completion
 
@@ -87,6 +95,7 @@ DollOSAIService sends UI operation commands via existing DollOSService Binder IP
       "id": "node_0",
       "class": "android.widget.TextView",
       "text": "Wi-Fi",
+      "resourceId": "com.android.settings:id/wifi_item",
       "contentDescription": "",
       "bounds": [0, 200, 1080, 280],
       "clickable": true,
@@ -185,6 +194,7 @@ Rule {
     actionParams: String            // JSON — worker task, event payload, etc.
     createdBy: String               // "user" or "ai"
     naturalLanguage: String         // original natural language (preserved when AI creates)
+    debouncePeriodMs: Long          // minimum interval between triggers, default 60000
     createdAt: Long
 }
 
@@ -232,11 +242,11 @@ Room `@Entity`, same database as ScheduleEntry from v1. On boot, reload all enab
 - Battery level from BroadcastReceiver (ACTION_BATTERY_CHANGED)
 - Time conditions evaluated on each event (not polled)
 
-On each incoming event, RuleEngine iterates enabled rules. If all conditions of a rule are satisfied, trigger the rule's action. Debounce: same rule cannot fire more than once per 60 seconds (configurable).
+On each incoming event, RuleEngine iterates enabled rules. If all conditions of a rule are satisfied, trigger the rule's action. Debounce: same rule cannot fire more often than its `debouncePeriodMs` (default 60s).
 
 ### AIDL Additions
 
-Add to `IDollOSAIService`:
+Add to `IDollOSAIService` (note: `IDollOSAIService.aidl` is defined in the AI Core design spec Section 6 and will be created as part of DollOSAIService app implementation; it does not exist yet in the committed codebase):
 
 ```
 // Programmable Events
@@ -255,15 +265,15 @@ void setRuleEnabled(String ruleId, boolean enabled);
 // UI Operation
 String readScreen(int displayId);                    // returns node tree JSON
 String executeUIAction(String actionJson);           // click, swipe, type, etc.
-byte[] captureScreen(int displayId);                 // screenshot as PNG bytes
+oneway void captureScreen(int displayId, ICaptureCallback callback);  // async — takeScreenshot() is callback-based
 void startTakeover(String taskDescription);          // enter takeover mode
 void stopTakeover();                                 // exit takeover mode
 int createVirtualDisplay(int width, int height);     // returns displayId
 void destroyVirtualDisplay(int displayId);
 void launchAppOnDisplay(String packageName, int displayId);
 
-// Notification (called by AIService)
-void showTakeoverInterruptModal(String taskDescription);  // power button modal
+// Note: takeover interrupt modal is triggered internally by AccessibilityService
+// on power button press — no AIDL call needed from AIService
 ```
 
 ### IDollOSAICallback (add to existing)
@@ -273,6 +283,8 @@ void showTakeoverInterruptModal(String taskDescription);  // power button modal
 void onTakeoverApproved();           // user approved takeover in conversation
 void onTakeoverCancelled();          // user cancelled (power button modal)
 void onScreenReady(int displayId);   // VirtualDisplay ready or screen content changed
+void onAppEvent(String packageName, String eventType);  // app open/close from AppEventMonitor
+void onCaptureResult(int displayId, in byte[] pngBytes); // screenshot result callback
 ```
 
 ## Section 7: File Structure
@@ -288,8 +300,8 @@ src/org/dollos/service/
     ScreenCapture.kt                 — screenshot capture
     TakeoverManager.kt              — takeover overlay + touch interception
     AppEventMonitor.kt              — detect app open/close from accessibility events
-  accessibility/res/
-    xml/accessibility_service_config.xml
+res/
+  xml/accessibility_service_config.xml   — module-level res/, not inside src/
 ```
 
 ### DollOSService (modify existing)
