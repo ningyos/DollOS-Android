@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">DollOS AI screen reading and UI automation service</string>
+    <string name="takeover_bar_text">AI 操作中：%s</string>
+    <string name="takeover_interrupt_title">AI 正在操作</string>
+    <string name="takeover_interrupt_cancel">取消</string>
+    <string name="takeover_interrupt_continue">繼續</string>
+</resources>
