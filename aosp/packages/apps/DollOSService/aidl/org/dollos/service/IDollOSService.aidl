@@ -59,4 +59,19 @@ interface IDollOSService {
 
     /** Launch an app on a specific display */
     void launchAppOnDisplay(String packageName, int displayId);
+
+    /** Get all programmable event rules as JSON array */
+    String getRules();
+
+    /** Add a new rule from JSON */
+    void addRule(String ruleJson);
+
+    /** Update an existing rule from JSON */
+    void updateRule(String ruleJson);
+
+    /** Remove a rule by ID */
+    void removeRule(String ruleId);
+
+    /** Enable or disable a rule */
+    void setRuleEnabled(String ruleId, boolean enabled);
 }

@@ -5,6 +5,8 @@ import android.util.Log
 import org.dollos.service.accessibility.DollOSAccessibilityService
 import org.dollos.service.accessibility.ScreenCapture
 import org.dollos.service.taskmanager.TaskManagerActivity
+import org.dollos.service.rule.Rule
+import org.json.JSONArray
 import org.json.JSONObject
 
 class DollOSServiceImpl : IDollOSService.Stub() {
@@ -133,5 +135,38 @@ class DollOSServiceImpl : IDollOSService.Stub() {
 
     override fun launchAppOnDisplay(packageName: String, displayId: Int) {
         DollOSApp.virtualDisplayManager.launchApp(packageName, displayId)
+    }
+
+    override fun getRules(): String {
+        val rules = DollOSApp.ruleDao.getAll()
+        val array = JSONArray()
+        rules.forEach { array.put(it.toJson()) }
+        return array.toString()
+    }
+
+    override fun addRule(ruleJson: String) {
+        val rule = Rule.fromJson(JSONObject(ruleJson))
+        DollOSApp.ruleDao.insert(rule)
+        DollOSApp.ruleEngine.reloadRules()
+        Log.i(TAG, "Rule added: ${rule.name}")
+    }
+
+    override fun updateRule(ruleJson: String) {
+        val rule = Rule.fromJson(JSONObject(ruleJson))
+        DollOSApp.ruleDao.update(rule)
+        DollOSApp.ruleEngine.reloadRules()
+        Log.i(TAG, "Rule updated: ${rule.name}")
+    }
+
+    override fun removeRule(ruleId: String) {
+        DollOSApp.ruleDao.delete(ruleId)
+        DollOSApp.ruleEngine.reloadRules()
+        Log.i(TAG, "Rule removed: $ruleId")
+    }
+
+    override fun setRuleEnabled(ruleId: String, enabled: Boolean) {
+        DollOSApp.ruleDao.setEnabled(ruleId, enabled)
+        DollOSApp.ruleEngine.reloadRules()
+        Log.i(TAG, "Rule $ruleId enabled=$enabled")
     }
 }
