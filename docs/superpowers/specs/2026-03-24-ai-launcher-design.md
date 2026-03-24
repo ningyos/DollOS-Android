@@ -97,6 +97,7 @@ Avatar animations from Character Pack:
     android:clearTaskOnLaunch="true"
     android:stateNotNeeded="true"
     android:resumeWhilePausing="true"
+    android:excludeFromRecents="true"
     android:screenOrientation="nosensor"
     android:theme="@style/Theme.DollOSLauncher">
     <intent-filter>
@@ -111,7 +112,7 @@ Avatar animations from Character Pack:
 
 ```
 FrameLayout (root)
-├── SurfaceView (Filament 3D scene, fullscreen)
+├── TextureView (Filament 3D scene, fullscreen — TextureView for proper compositing with translucent overlays)
 ├── FrameLayout (UI overlay)
 │   ├── ResponseBubbleView (floating bubble, GONE by default)
 │   ├── ActionConfirmCard (confirmation overlay, GONE by default)
@@ -132,7 +133,7 @@ FrameLayout (root)
 - Loads glTF model via Filament's `gltfio` library
 - Animation playback via Filament's `Animator`
 - Scene config (lighting, camera, background) from Character Pack's `scene.json`
-- Renders on `SurfaceView` callback
+- Renders on `TextureView` (not SurfaceView — TextureView enables proper alpha compositing with translucent UI overlays like blurred bubbles and drawer)
 
 ### Service Connection
 
@@ -193,6 +194,58 @@ packages/apps/DollOSLauncher/
       colors.xml
 ```
 
+## Character Asset Access
+
+The Launcher is a separate app from DollOSAIService and cannot access its internal storage directly. Character assets (model.glb, animations, scene.json) are loaded via AIDL:
+
+```
+ParcelFileDescriptor getCharacterAsset(String characterId, String path);
+```
+
+On startup and on `onCharacterChanged`, the Launcher:
+1. Calls `getActiveCharacter()` to get the character ID
+2. Calls `getCharacterAsset(id, "scene.json")` → parse scene config
+3. Calls `getCharacterAsset(id, "model.glb")` → load into Filament
+4. Calls `getCharacterAsset(id, "animations/idle.glb")` etc. → load animation clips
+
+Assets are read via ParcelFileDescriptor (file descriptor IPC), not copied.
+
+## No Character Installed State
+
+When no character pack is installed or active character is invalid:
+- 3D scene shows empty/default background (dark gradient)
+- No avatar rendered
+- Center text: "No AI character installed. Import a .doll file to get started."
+- Input bar still functional (conversation works, just no avatar)
+- Character picker (long-press) shows empty state with import button
+
+## App Drawer Gesture Handling
+
+Right-edge swipe conflicts with Android's system back gesture. Resolution:
+- Launcher calls `View.setSystemGestureExclusionRects()` to exclude a strip on the right edge (40dp wide)
+- This allows the app drawer swipe to take priority over system back
+- System back gesture still works on the left edge
+
+## Navigation Behavior
+
+- **Back button:** If app drawer is open → close drawer. If character picker is open → close picker. Otherwise → no-op (standard launcher behavior).
+- **Home button:** If app drawer/picker is open → close and return to home. Handled via `onNewIntent()` in singleTask mode.
+- **Recents:** Launcher excluded from recents (`excludeFromRecents="true"`).
+
+## Animation State Machine
+
+States: `IDLE`, `THINKING`, `TALKING`
+
+Transitions:
+- User sends message → `IDLE` → `THINKING`
+- First token received → `THINKING` → `TALKING`
+- Response complete → `TALKING` → `IDLE`
+- Error → any state → `IDLE`
+
+Blend duration: 300ms crossfade between animations.
+
+Missing animations: if `talking.glb` or `thinking.glb` is not in the character pack, fall back to `idle.glb` for all states. Only `model.glb` is required; animation files are optional.
+
 ## Dependencies
 
 - `com.google.android.filament:filament-android` — 3D rendering
@@ -210,3 +263,4 @@ packages/apps/DollOSLauncher/
 - Wallpaper support (scene.json background replaces wallpaper)
 - Avatar expression system tied to sentiment analysis
 - Custom gesture recognition beyond app drawer swipe
+- Conversation history browsing (deferred to separate Conversation UI)

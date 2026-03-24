@@ -121,19 +121,21 @@ Add to `IDollOSAIService.aidl`:
 
 ```
 // Character Pack management
-String importCharacter(in ParcelFileDescriptor fd);  // returns character ID
+String importCharacter(in ParcelFileDescriptor fd);  // returns character ID, null on failure
 void exportCharacter(String characterId, in ParcelFileDescriptor fd);
 void setActiveCharacter(String characterId);
 String getActiveCharacter();  // returns character ID
 String listCharacters();  // returns JSON array
 void deleteCharacter(String characterId);
 String getCharacterInfo(String characterId);  // returns JSON
+ParcelFileDescriptor getCharacterAsset(String characterId, String path);  // asset access for Launcher
 ```
 
 Add to `IDollOSAICallback.aidl`:
 
 ```
 void onCharacterChanged(String characterId, String characterName);
+void onCharacterImportFailed(String errorCode, String message);
 ```
 
 ### Memory Model
@@ -175,18 +177,71 @@ void onCharacterChanged(String characterId, String characterName);
    - Applies new scene settings (background, lighting, camera)
 4. Wake Word (future): reloads `wake_word.bin`
 
+### Character Switch During Active Conversation
+
+`setActiveCharacter()` must:
+1. Call `stopGeneration()` to cancel any active LLM streaming
+2. Clear all pending confirmations (action confirms, memory confirms)
+3. Cancel all background workers (they may have personality-dependent context)
+4. Then proceed with the switch flow
+
+If the caller wants to avoid disruption, check `getActiveTasks()` first and warn the user.
+
+### Asset Access for Other Apps
+
+Character assets (model.glb, animations, scene.json) are stored in DollOSAIService's internal storage. Other apps (e.g., Launcher) cannot access this directly. CharacterManager provides asset access via AIDL:
+
+```
+ParcelFileDescriptor getCharacterAsset(String characterId, String path);
+```
+
+Where `path` is relative to the character directory (e.g., `"model.glb"`, `"animations/idle.glb"`, `"scene.json"`). The Launcher calls this to load 3D assets.
+
 ### File Association
 
-Register `.doll` file type in AndroidManifest so tapping a `.doll` file in file manager triggers import:
+Register `.doll` file type via content URI scheme (file URIs blocked on Android 7+):
 
 ```xml
 <intent-filter>
     <action android:name="android.intent.action.VIEW" />
     <category android:name="android.intent.category.DEFAULT" />
-    <data android:mimeType="application/octet-stream" />
-    <data android:pathPattern=".*\\.doll" />
+    <data android:scheme="content" />
+    <data android:mimeType="*/*" />
 </intent-filter>
 ```
+
+The activity checks if the URI's display name ends with `.doll` before processing.
+
+## Security
+
+### Zip Extraction Safety
+
+- **Path traversal (zip-slip):** Every zip entry's path is validated against canonical path. Entries containing `..` are rejected. Follow the same pattern as `MemoryExporter.importMemory()`.
+- **File size limits:** Max `.doll` file size: 200MB. Max individual entry: 100MB. Max total extracted: 300MB. Max entry count: 100.
+- **Zip bomb protection:** Track total bytes extracted and abort if exceeding limit.
+
+### Validation
+
+`CharacterValidator` checks:
+- `manifest.json` exists and is valid JSON with required fields
+- `formatVersion` is a known version (reject unknown versions)
+- `model.glb` exists (for `avatarType: "3d"`)
+- All referenced files exist in the archive
+- File sizes within limits
+- Personality field lengths within PersonalityManager limits (backstory ≤ 2500, directive ≤ 150)
+
+## Error Handling
+
+- `importCharacter()` returns null on failure. Errors reported via `onCharacterImportFailed(String errorCode, String message)` callback.
+- `getCharacterInfo()` returns JSON with all manifest fields + character ID + installed timestamp + file sizes.
+- `listCharacters()` returns JSON array with: id, name, author, avatarType, thumbnailAvailable, isActive.
+
+## Edge Cases
+
+- **No character installed:** System operates without avatar. Personality uses defaults. Launcher shows empty scene with import prompt.
+- **Corrupt character files:** CharacterManager detects on load, marks character as invalid, falls back to previous active character or no-character state.
+- **Duplicate import:** Each import generates a new UUID. Importing the same `.doll` twice creates two separate characters.
+- **Format version mismatch:** Unknown `formatVersion` → reject with clear error message.
 
 ## Files
 
