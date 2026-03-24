@@ -89,7 +89,6 @@ src/org/dollos/ai/rule/
     android:canPerformGestures="true"
     android:canTakeScreenshot="true"
     android:accessibilityFlags="flagRequestFilterKeyEvents|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
-    android:settingsActivity=""
     android:canRequestFilterKeyEvents="true" />
 ```
 
@@ -442,11 +441,13 @@ class UIExecutor(private val service: DollOSAccessibilityService) {
         return try {
             val cmd = JSONObject(actionJson)
             val type = cmd.getString("type")
+            // displayId defaults to 0 (physical screen) if not specified
+            val displayId = cmd.optInt("displayId", 0)
 
             when (type) {
-                "click" -> performClick(cmd)
-                "long_press" -> performLongPress(cmd)
-                "input_text" -> performInputText(cmd)
+                "click" -> performClick(cmd, displayId)
+                "long_press" -> performLongPress(cmd, displayId)
+                "input_text" -> performInputText(cmd, displayId)
                 "swipe" -> performSwipe(cmd)
                 "drag" -> performDrag(cmd)
                 "multi_gesture" -> performMultiGesture(cmd)
@@ -461,20 +462,20 @@ class UIExecutor(private val service: DollOSAccessibilityService) {
         }
     }
 
-    private fun performClick(cmd: JSONObject): String {
-        val node = findNodeById(cmd.getString("node_id")) ?: return result(false, "Node not found")
+    private fun performClick(cmd: JSONObject, displayId: Int): String {
+        val node = findNodeById(cmd.getString("node_id"), displayId) ?: return result(false, "Node not found")
         val success = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         return result(success, if (success) "Clicked" else "Click failed")
     }
 
-    private fun performLongPress(cmd: JSONObject): String {
-        val node = findNodeById(cmd.getString("node_id")) ?: return result(false, "Node not found")
+    private fun performLongPress(cmd: JSONObject, displayId: Int): String {
+        val node = findNodeById(cmd.getString("node_id"), displayId) ?: return result(false, "Node not found")
         val success = node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
         return result(success, if (success) "Long pressed" else "Long press failed")
     }
 
-    private fun performInputText(cmd: JSONObject): String {
-        val node = findNodeById(cmd.getString("node_id")) ?: return result(false, "Node not found")
+    private fun performInputText(cmd: JSONObject, displayId: Int): String {
+        val node = findNodeById(cmd.getString("node_id"), displayId) ?: return result(false, "Node not found")
         val text = cmd.getString("text")
         val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
         val success = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
@@ -550,12 +551,20 @@ class UIExecutor(private val service: DollOSAccessibilityService) {
     }
 
     /**
-     * Find a node by its "node_N" ID. Re-reads the current window tree
-     * and returns the Nth node in traversal order.
+     * Find a node by its "node_N" ID on a specific display.
+     * Uses getWindows() filtered by displayId for multi-display support.
      */
-    private fun findNodeById(nodeId: String): AccessibilityNodeInfo? {
+    private fun findNodeById(nodeId: String, displayId: Int): AccessibilityNodeInfo? {
         val index = nodeId.removePrefix("node_").toIntOrNull() ?: return null
-        val root = service.rootInActiveWindow ?: return null
+
+        val windows = service.windows
+        val window = windows.firstOrNull {
+            it.displayId == displayId && it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION && it.isFocused
+        } ?: windows.firstOrNull {
+            it.displayId == displayId && it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION
+        } ?: return null
+
+        val root = window.root ?: return null
 
         var counter = 0
         fun find(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -573,7 +582,10 @@ class UIExecutor(private val service: DollOSAccessibilityService) {
     }
 
     private fun result(success: Boolean, message: String): String {
-        return """{"success":$success,"message":"$message"}"""
+        return JSONObject().apply {
+            put("success", success)
+            put("message", message)
+        }.toString()
     }
 }
 ```
@@ -725,7 +737,6 @@ import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.util.DisplayMetrics
 import android.util.Log
-import android.view.WindowManager
 
 class VirtualDisplayManager(private val context: Context) {
 
@@ -749,8 +760,8 @@ class VirtualDisplayManager(private val context: Context) {
      */
     fun create(width: Int, height: Int): Int {
         val metrics = DisplayMetrics()
-        val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        wm.defaultDisplay.getRealMetrics(metrics)
+        val defaultDisplay = displayManager.getDisplay(android.view.Display.DEFAULT_DISPLAY)
+        defaultDisplay.getRealMetrics(metrics)
 
         val w = if (width > 0) width else metrics.widthPixels
         val h = if (height > 0) height else metrics.heightPixels
@@ -1188,7 +1199,21 @@ git commit -m "feat: add AppEventMonitor — track foreground app changes"
 - Modify: `aosp/packages/apps/DollOSService/aidl/org/dollos/service/IDollOSService.aidl`
 - Modify: `aosp/packages/apps/DollOSService/src/org/dollos/service/DollOSServiceImpl.kt`
 
+- [ ] **Step 0: Create ICaptureCallback.aidl**
+
+Create `aosp/packages/apps/DollOSService/aidl/org/dollos/service/ICaptureCallback.aidl`:
+
+```aidl
+package org.dollos.service;
+
+interface ICaptureCallback {
+    void onCaptureResult(int displayId, in byte[] pngBytes);
+}
+```
+
 - [ ] **Step 1: Update IDollOSService.aidl**
+
+Add import at top: `import org.dollos.service.ICaptureCallback;`
 
 Add after `showTaskManager()`:
 
@@ -1199,8 +1224,8 @@ Add after `showTaskManager()`:
     /** Execute a UI action (click, swipe, type, etc.) from JSON command */
     String executeUIAction(String actionJson);
 
-    /** Capture screenshot asynchronously - result delivered via callback */
-    void captureScreen(int displayId);
+    /** Capture screenshot asynchronously - result delivered via ICaptureCallback */
+    oneway void captureScreen(int displayId, ICaptureCallback callback);
 
     /** Enter takeover mode with task description */
     void startTakeover(String taskDescription);
@@ -1253,26 +1278,23 @@ override fun executeUIAction(actionJson: String): String {
     return a11y.uiExecutor.execute(actionJson)
 }
 
-override fun captureScreen(displayId: Int) {
-    val a11y = DollOSAccessibilityService.instance ?: return
+override fun captureScreen(displayId: Int, callback: ICaptureCallback) {
+    val a11y = DollOSAccessibilityService.instance ?: run {
+        callback.onCaptureResult(displayId, null)
+        return
+    }
     val vdImageReader = DollOSApp.virtualDisplayManager.getImageReader(displayId)
 
+    val captureCallback = object : ScreenCapture.CaptureCallback {
+        override fun onCaptureResult(displayId: Int, pngBytes: ByteArray?) {
+            callback.onCaptureResult(displayId, pngBytes)
+        }
+    }
+
     if (vdImageReader != null) {
-        a11y.screenCapture.captureVirtualDisplay(displayId, vdImageReader,
-            object : ScreenCapture.CaptureCallback {
-                override fun onCaptureResult(displayId: Int, pngBytes: ByteArray?) {
-                    // TODO: deliver to AIService via callback when callback is registered
-                    Log.d("DollOSServiceImpl", "VirtualDisplay capture: ${pngBytes?.size ?: 0} bytes")
-                }
-            })
+        a11y.screenCapture.captureVirtualDisplay(displayId, vdImageReader, captureCallback)
     } else {
-        a11y.screenCapture.capturePhysicalScreen(displayId,
-            object : ScreenCapture.CaptureCallback {
-                override fun onCaptureResult(displayId: Int, pngBytes: ByteArray?) {
-                    // TODO: deliver to AIService via callback when callback is registered
-                    Log.d("DollOSServiceImpl", "Physical capture: ${pngBytes?.size ?: 0} bytes")
-                }
-            })
+        a11y.screenCapture.capturePhysicalScreen(displayId, captureCallback)
     }
 }
 
@@ -1305,7 +1327,8 @@ override fun launchAppOnDisplay(packageName: String, displayId: Int) {
 - [ ] **Step 4: Commit**
 
 ```bash
-git add aosp/packages/apps/DollOSService/aidl/org/dollos/service/IDollOSService.aidl \
+git add aosp/packages/apps/DollOSService/aidl/org/dollos/service/ICaptureCallback.aidl \
+        aosp/packages/apps/DollOSService/aidl/org/dollos/service/IDollOSService.aidl \
         aosp/packages/apps/DollOSService/src/org/dollos/service/DollOSApp.kt \
         aosp/packages/apps/DollOSService/src/org/dollos/service/DollOSServiceImpl.kt
 git commit -m "feat: add UI operation AIDL methods and service implementation"
@@ -1720,7 +1743,7 @@ object RuleTable {
         put(COL_ID, rule.id)
         put(COL_NAME, rule.name)
         put(COL_ENABLED, if (rule.enabled) 1 else 0)
-        put(COL_CONDITIONS_JSON, rule.conditions.map { it.toJson().toString() }.joinToString("|"))
+        put(COL_CONDITIONS_JSON, org.json.JSONArray().apply { rule.conditions.forEach { put(it.toJson()) } }.toString())
         put(COL_ACTION, rule.action.name)
         put(COL_ACTION_PARAMS, rule.actionParams)
         put(COL_CREATED_BY, rule.createdBy)
@@ -1731,8 +1754,9 @@ object RuleTable {
 
     fun fromCursor(cursor: Cursor): Rule {
         val conditionsRaw = cursor.getString(cursor.getColumnIndexOrThrow(COL_CONDITIONS_JSON))
-        val conditions = if (conditionsRaw.isEmpty()) emptyList() else {
-            conditionsRaw.split("|").map { Condition.fromJson(org.json.JSONObject(it)) }
+        val conditions = if (conditionsRaw.isEmpty() || conditionsRaw == "[]") emptyList() else {
+            val arr = org.json.JSONArray(conditionsRaw)
+            (0 until arr.length()).map { Condition.fromJson(arr.getJSONObject(it)) }
         }
         return Rule(
             id = cursor.getString(cursor.getColumnIndexOrThrow(COL_ID)),
@@ -1925,10 +1949,21 @@ class RuleEngine(
                     chargingState = "discharging"
                     evaluate("CHARGING_STATE")
                 }
-                WifiManager.WIFI_STATE_CHANGED_ACTION -> {
-                    val state = intent.getIntExtra(WifiManager.EXTRA_WIFI_STATE, WifiManager.WIFI_STATE_UNKNOWN)
-                    wifiState = if (state == WifiManager.WIFI_STATE_ENABLED) "connected" else "disconnected"
+                WifiManager.NETWORK_STATE_CHANGED_ACTION -> {
+                    val networkInfo = intent.getParcelableExtra<android.net.NetworkInfo>(WifiManager.EXTRA_NETWORK_INFO)
+                    val wasConnected = wifiState == "connected"
+                    wifiState = if (networkInfo?.isConnected == true) "connected" else "disconnected"
+
+                    // Update SSID when connected
+                    if (wifiState == "connected") {
+                        val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                        wifiSsid = wifiManager.connectionInfo?.ssid?.removeSurrounding("\"") ?: ""
+                    } else {
+                        wifiSsid = ""
+                    }
+
                     evaluate("WIFI_STATE")
+                    if (wifiSsid.isNotEmpty()) evaluate("WIFI_SSID")
                 }
                 Intent.ACTION_BATTERY_CHANGED -> {
                     val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
@@ -1956,7 +1991,7 @@ class RuleEngine(
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_POWER_CONNECTED)
             addAction(Intent.ACTION_POWER_DISCONNECTED)
-            addAction(WifiManager.WIFI_STATE_CHANGED_ACTION)
+            addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION)
             addAction(Intent.ACTION_BATTERY_CHANGED)
             addAction(android.bluetooth.BluetoothAdapter.ACTION_CONNECTION_STATE_CHANGED)
         }
