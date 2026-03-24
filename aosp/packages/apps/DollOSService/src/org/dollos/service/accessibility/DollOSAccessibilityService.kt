@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.util.Log
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
+import org.dollos.service.DollOSApp
 
 class DollOSAccessibilityService : AccessibilityService() {
 
@@ -32,6 +33,7 @@ class DollOSAccessibilityService : AccessibilityService() {
         screenCapture = ScreenCapture(this)
         takeoverManager = TakeoverManager(this)
         appEventMonitor = AppEventMonitor()
+        appEventMonitor.setListener(DollOSApp.ruleEngine)
         Log.i(TAG, "AccessibilityService connected")
     }
 

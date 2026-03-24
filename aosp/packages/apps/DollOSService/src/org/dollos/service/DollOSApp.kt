@@ -28,6 +28,10 @@ class DollOSApp : Application() {
             private set
         lateinit var notificationRouter: org.dollos.service.notification.NotificationRouter
             private set
+        lateinit var ruleDao: org.dollos.service.rule.RuleDao
+            private set
+        lateinit var ruleEngine: org.dollos.service.rule.RuleEngine
+            private set
     }
 
     override fun onCreate() {
@@ -47,6 +51,11 @@ class DollOSApp : Application() {
 
         virtualDisplayManager = org.dollos.service.accessibility.VirtualDisplayManager(this)
         notificationRouter = org.dollos.service.notification.NotificationRouter(this)
+
+        ruleDao = org.dollos.service.rule.RuleDao(this)
+        ruleEngine = org.dollos.service.rule.RuleEngine(this, ruleDao, notificationRouter)
+        ruleEngine.start()
+
         enableAccessibilityService()
     }
 
