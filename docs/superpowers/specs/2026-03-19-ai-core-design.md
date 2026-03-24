@@ -474,7 +474,7 @@ AI proactively notifies users with context-aware delivery:
 | Plan D v1 | Complete | Background work system: event queue, workers, triggers |
 | Embedding | Complete | Cloud (configurable endpoint) + Local (ONNX Runtime), per-model vector store, retrieval modes |
 | Settings UI | Complete | Restructured: Stats + Personality main page, LLM / Memory / Budget sub-pages |
-| Plan D v2 | Designed | UI operation (VirtualDisplay), smart notification, programmable events |
+| Plan D v2 | Complete | UI operation (AccessibilityService + VirtualDisplay + takeover), smart notification, programmable events |
 
 ## Out of Scope
 
