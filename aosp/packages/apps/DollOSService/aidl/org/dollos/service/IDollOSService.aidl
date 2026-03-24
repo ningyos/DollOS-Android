@@ -1,5 +1,7 @@
 package org.dollos.service;
 
+import org.dollos.service.ICaptureCallback;
+
 interface IDollOSService {
     /** Returns the DollOS version string */
     String getVersion();
@@ -33,4 +35,28 @@ interface IDollOSService {
 
     /** Show the AI Task Manager modal */
     void showTaskManager();
+
+    /** Read the accessibility node tree from a display as JSON */
+    String readScreen(int displayId);
+
+    /** Execute a UI action (click, swipe, type, etc.) from JSON command */
+    String executeUIAction(String actionJson);
+
+    /** Capture screenshot asynchronously - result delivered via ICaptureCallback */
+    oneway void captureScreen(int displayId, ICaptureCallback callback);
+
+    /** Enter takeover mode with task description */
+    void startTakeover(String taskDescription);
+
+    /** Exit takeover mode */
+    void stopTakeover();
+
+    /** Create a VirtualDisplay, returns displayId */
+    int createVirtualDisplay(int width, int height);
+
+    /** Destroy a VirtualDisplay */
+    void destroyVirtualDisplay(int displayId);
+
+    /** Launch an app on a specific display */
+    void launchAppOnDisplay(String packageName, int displayId);
 }

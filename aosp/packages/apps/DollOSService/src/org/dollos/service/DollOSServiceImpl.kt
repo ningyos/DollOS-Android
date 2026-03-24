@@ -2,6 +2,8 @@ package org.dollos.service
 
 import android.content.Intent
 import android.util.Log
+import org.dollos.service.accessibility.DollOSAccessibilityService
+import org.dollos.service.accessibility.ScreenCapture
 import org.dollos.service.taskmanager.TaskManagerActivity
 import org.json.JSONObject
 
@@ -76,5 +78,60 @@ class DollOSServiceImpl : IDollOSService.Stub() {
         val intent = Intent(DollOSApp.instance, TaskManagerActivity::class.java)
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         DollOSApp.instance.startActivity(intent)
+    }
+
+    override fun readScreen(displayId: Int): String {
+        val a11y = DollOSAccessibilityService.instance
+            ?: return """{"package":"","displayId":$displayId,"nodes":[],"error":"AccessibilityService not running"}"""
+        return a11y.nodeReader.readScreen(displayId)
+    }
+
+    override fun executeUIAction(actionJson: String): String {
+        val a11y = DollOSAccessibilityService.instance
+            ?: return """{"success":false,"message":"AccessibilityService not running"}"""
+        return a11y.uiExecutor.execute(actionJson)
+    }
+
+    override fun captureScreen(displayId: Int, callback: ICaptureCallback) {
+        val a11y = DollOSAccessibilityService.instance ?: run {
+            callback.onCaptureResult(displayId, null)
+            return
+        }
+        val vdImageReader = DollOSApp.virtualDisplayManager.getImageReader(displayId)
+
+        val captureCallback = object : ScreenCapture.CaptureCallback {
+            override fun onCaptureResult(displayId: Int, pngBytes: ByteArray?) {
+                callback.onCaptureResult(displayId, pngBytes)
+            }
+        }
+
+        if (vdImageReader != null) {
+            a11y.screenCapture.captureVirtualDisplay(displayId, vdImageReader, captureCallback)
+        } else {
+            a11y.screenCapture.capturePhysicalScreen(displayId, captureCallback)
+        }
+    }
+
+    override fun startTakeover(taskDescription: String) {
+        val a11y = DollOSAccessibilityService.instance ?: return
+        a11y.takeoverManager.start(taskDescription) {
+            Log.i(TAG, "Takeover cancelled by user")
+        }
+    }
+
+    override fun stopTakeover() {
+        DollOSAccessibilityService.instance?.takeoverManager?.stop()
+    }
+
+    override fun createVirtualDisplay(width: Int, height: Int): Int {
+        return DollOSApp.virtualDisplayManager.create(width, height)
+    }
+
+    override fun destroyVirtualDisplay(displayId: Int) {
+        DollOSApp.virtualDisplayManager.destroy(displayId)
+    }
+
+    override fun launchAppOnDisplay(packageName: String, displayId: Int) {
+        DollOSApp.virtualDisplayManager.launchApp(packageName, displayId)
     }
 }
