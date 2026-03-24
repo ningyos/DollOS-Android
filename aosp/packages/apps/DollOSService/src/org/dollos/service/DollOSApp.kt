@@ -26,6 +26,8 @@ class DollOSApp : Application() {
             private set
         lateinit var virtualDisplayManager: org.dollos.service.accessibility.VirtualDisplayManager
             private set
+        lateinit var notificationRouter: org.dollos.service.notification.NotificationRouter
+            private set
     }
 
     override fun onCreate() {
@@ -44,6 +46,7 @@ class DollOSApp : Application() {
         Log.i(TAG, "Registered ${actionRegistry.getAll().size} actions")
 
         virtualDisplayManager = org.dollos.service.accessibility.VirtualDisplayManager(this)
+        notificationRouter = org.dollos.service.notification.NotificationRouter(this)
         enableAccessibilityService()
     }
 
