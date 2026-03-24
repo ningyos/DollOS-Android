@@ -1,6 +1,9 @@
 package org.dollos.service
 
+import android.content.Intent
 import android.util.Log
+import org.dollos.service.taskmanager.TaskManagerActivity
+import org.json.JSONObject
 
 class DollOSServiceImpl : IDollOSService.Stub() {
 
@@ -54,5 +57,24 @@ class DollOSServiceImpl : IDollOSService.Stub() {
 
     override fun getPersonalityName(): String {
         return DollOSApp.prefs.getString(KEY_AI_NAME, "") ?: ""
+    }
+
+    override fun executeSystemAction(actionId: String, paramsJson: String): String {
+        val action = DollOSApp.actionRegistry.get(actionId)
+            ?: return """{"success":false,"message":"Unknown action: $actionId"}"""
+
+        val params = JSONObject(paramsJson)
+        val result = action.execute(DollOSApp.instance, params)
+        return """{"success":${result.success},"message":"${result.message}"}"""
+    }
+
+    override fun getAvailableActions(): String {
+        return DollOSApp.actionRegistry.toToolDescriptions()
+    }
+
+    override fun showTaskManager() {
+        val intent = Intent(DollOSApp.instance, TaskManagerActivity::class.java)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        DollOSApp.instance.startActivity(intent)
     }
 }

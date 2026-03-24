@@ -24,4 +24,13 @@ interface IDollOSService {
 
     /** Get AI personality name */
     String getPersonalityName();
+
+    /** Execute a system action on behalf of DollOSAIService */
+    String executeSystemAction(String actionId, String paramsJson);
+
+    /** Get list of available actions as JSON */
+    String getAvailableActions();
+
+    /** Show the AI Task Manager modal */
+    void showTaskManager();
 }

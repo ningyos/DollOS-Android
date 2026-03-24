@@ -7,6 +7,7 @@ java_library {
         local_include_dirs: ["aidl"],
     },
     platform_apis: true,
+    system_ext_specific: true,
 }
 
 android_app {
@@ -17,9 +18,10 @@ android_app {
     platform_apis: true,
     privileged: true,
     certificate: "platform",
-    overrides: ["Auditor", "Updater"],
+    system_ext_specific: true,
     static_libs: [
         "androidx.core_core-ktx",
+        "androidx.recyclerview_recyclerview",
         "dollos-service-aidl",
     ],
     kotlincflags: ["-Xjvm-default=all"],

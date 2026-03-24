@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/background_overlay"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#80000000">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="vertical"
+        android:clickable="true"
+        android:background="@android:color/white"
+        android:paddingTop="24dp"
+        android:paddingBottom="40dp"
+        android:paddingLeft="24dp"
+        android:paddingRight="24dp"
+        android:elevation="8dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="AI Activity"
+            android:textSize="24sp"
+            android:fontFamily="sans-serif-medium"
+            android:textColor="#000000" />
+
+        <TextView
+            android:id="@+id/status_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="All AI tasks paused"
+            android:textSize="14sp"
+            android:textColor="#666666" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/task_list"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:maxHeight="400dp" />
+
+        <TextView
+            android:id="@+id/empty_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="No active AI tasks"
+            android:textSize="16sp"
+            android:textColor="#999999"
+            android:gravity="center"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/btn_resume"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Resume All"
+            android:textSize="17sp"
+            android:fontFamily="sans-serif-medium"
+            android:textColor="#FFFFFF"
+            android:background="@drawable/button_primary_background"
+            android:gravity="center"
+            android:paddingTop="14dp"
+            android:paddingBottom="14dp" />
+
+    </LinearLayout>
+</FrameLayout>
