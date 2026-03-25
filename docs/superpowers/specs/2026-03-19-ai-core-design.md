@@ -475,6 +475,8 @@ AI proactively notifies users with context-aware delivery:
 | Embedding | Complete | Cloud (configurable endpoint) + Local (ONNX Runtime), per-model vector store, retrieval modes |
 | Settings UI | Complete | Restructured: Stats + Personality main page, LLM / Memory / Budget sub-pages |
 | Plan D v2 | Complete | UI operation (AccessibilityService + VirtualDisplay + takeover), smart notification, programmable events |
+| Character Pack | Complete | .doll format, import/export/switch, security validation, AIDL asset access |
+| AI Launcher | Complete | Full-screen 3D Launcher (Filament + TextureView), conversation bubble, app drawer, character picker |
 
 ## Out of Scope
 
