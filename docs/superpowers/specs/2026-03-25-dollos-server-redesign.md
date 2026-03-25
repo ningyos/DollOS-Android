@@ -88,7 +88,7 @@ Hybrid search 結合兩種搜尋機制：
 - **sqlite-vec** — 向量相似度搜尋（cosine similarity）
 - **FTS5** — BM25 關鍵字搜尋
 - **融合** — RRF（Reciprocal Rank Fusion），70% vector + 30% BM25
-- **Embedding** — 透過 NATS 呼叫現有的 embedding kmod（Qwen3-Embedding）
+- **Embedding** — 透過 NATS 呼叫現有的 embedding kmod（Qwen3-Embedding-0.6B，維度由模型決定，sqlite-vec table 建立時固定）
 
 ### 索引建構
 
@@ -158,7 +158,7 @@ Write queue 特性：
 3. `MEMORY.md` 從現有的 `## User Profile` state 段落生成
 4. 每日記憶從 episodic partition 按日期分組匯出
 5. Speaker profiles 匯出到 sqlite-vec
-6. 圖片從 RustFS 下載到本地 `/data/dollos/images/`
+6. 圖片從 RustFS 下載到本地 `/data/dollos/images/`，同時遷移 ImageMemory metadata（descriptions、embeddings）到 sqlite-vec `image_memory` table
 7. Tortoise ORM 的 `MemoryEntry` 表不再使用，遷移後可刪除
 8. 遷移完成後重建 sqlite-vec 索引
 
@@ -375,7 +375,7 @@ Message types：
 - 預設 last-write-wins（mtime 較新的覆寫）
 - 如果 mtime 差距 ≤ 5 秒（幾乎同時修改），保留兩份：原檔 + `<filename>.conflict.md`
 - AI 下次讀到 `.conflict.md` 時自行合併
-- 衝突檔清理：超過 7 天未合併的 `.conflict.md`，自動採用較新版本並刪除衝突檔
+- 衝突檔清理：超過 7 天未合併的 `.conflict.md`，自動刪除衝突檔（保留原檔，即同步時 last-write-wins 的那份）
 
 **檔案大小限制：**
 
@@ -429,6 +429,7 @@ Message types：
       <sha256>.<ext>
   db/
     dollos.db                          ← 主資料庫（Tortoise ORM：cron, calendar, usage, logs, stack）
+    speakers.db                        ← Speaker profiles（192-dim CAM++ 向量）
   config/
     dollos.yaml                        ← 服務設定
 ```
