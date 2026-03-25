@@ -20,6 +20,7 @@ DollOS-Server 是 DollOS AI 伴侶生態系統的電腦端。手機（DollOS-And
 | 角色系統 | `.doll` 完整支援（人格 + 語音 + 3D） |
 | 子代理 | 移除 TinyGura（主循環 + parallel tool calls 足夠） |
 | 外部依賴 | 只保留 NATS（移除 Milvus、etcd、Attu、MinIO） |
+| 記憶模型 | 每角色獨立記憶（手機端 Character Pack spec 需同步更新） |
 | 改動策略 | 外科手術式，保留 GuraOS 核心架構 |
 
 ### 移除項目總覽
@@ -140,6 +141,46 @@ Write queue 特性：
 - 檔名：SHA-256 content hash + 原始副檔名
 - metadata 存在 sqlite-vec 同一個 DB（image_memory table）
 - ImageMemory 的向量搜尋也走 sqlite-vec
+- `vision/memory.py` 需改寫：RustFS client → 本地檔案讀寫，Milvus → sqlite-vec
+
+### Speaker Profiles
+
+現有 Milvus 的 `speaker_profiles` collection（192-dim CAM++ 向量）遷移到 sqlite-vec：
+- 新增 `speaker_profiles` table in `/data/dollos/db/speakers.db`
+- `kmod-audio-speaker` 的介面不變（透過 NATS），只改底層儲存
+
+### 資料遷移（從現有 Milvus）
+
+一次性遷移腳本 `scripts/migrate_milvus_to_markdown.py`：
+
+1. 從 Milvus 各 partition 匯出所有 entries
+2. 按 partition 和 metadata 分類寫入對應的 Markdown 目錄（`people/`、`topics/`、`decisions/`）
+3. `MEMORY.md` 從現有的 `## User Profile` state 段落生成
+4. 每日記憶從 episodic partition 按日期分組匯出
+5. Speaker profiles 匯出到 sqlite-vec
+6. 圖片從 RustFS 下載到本地 `/data/dollos/images/`
+7. Tortoise ORM 的 `MemoryEntry` 表不再使用，遷移後可刪除
+8. 遷移完成後重建 sqlite-vec 索引
+
+遷移是可選的 — 新裝的 DollOS-Server 直接從空白開始。
+
+### 同步與寫入的順序
+
+服務啟動時的操作順序：
+1. 重放 `pending_writes.json`（本地未完成的寫入）
+2. 如果手機已連線，執行完整記憶同步
+3. 同步時，`pending_writes.json` 中的寫入已經反映在 Markdown 檔案中（因為步驟 1 先執行），所以同步看到的是最新狀態
+
+角色切換時：
+1. Flush 當前角色的 write queue
+2. 等待 write queue 清空
+3. 切換記憶目錄
+4. 通知對端（`character_switch`）
+
+### 已知限制
+
+- **Consolidation 在同步時可能丟失近似記憶**：兩端各自 consolidate 後同步，last-write-wins 可能覆蓋另一端的 consolidation 結果。這是可接受的，因為 consolidation 是「合併相似記憶」而非「創造新資訊」。
+- **經驗學習（LearnerService）已移除且不替代**：TinyGura 的經驗回流機制不再存在。如果未來需要學習能力，可透過 memsearch 的 `topics/skills/` 目錄和 AI 自我反思寫入實現。
 
 ---
 
@@ -205,7 +246,10 @@ Kmod v2 的 `ToolDef` 已經是 `name` / `description` / `parameters`（JSON sch
 | `guraverse/` | 整個目錄移除 |
 | `services/learner.py` | 移除 |
 | `tools/agents/` | 移除 spawn 相關工具 |
-| 測試 | 所有 code block 測試重寫 |
+| `vision/memory.py` | RustFS → 本地檔案，Milvus → sqlite-vec |
+| `infra/milvus.py` | 移除 |
+| `infra/rustfs.py` | 移除 |
+| 測試 | code block 相關測試重寫；新增 Markdown chunking、sqlite-vec、sync protocol 測試 |
 
 ---
 
@@ -286,12 +330,15 @@ WebSocket + MessagePack（沿用 driver-phone 現有格式），擴充 message t
 
 ```
 {
+  "v": 1,
   "type": "<message_type>",
   "payload": { ... },
   "timestamp": <unix_ms>,
   "id": "<uuid>"
 }
 ```
+
+`v` 欄位為 protocol 版本號。連線握手時雙方交換版本，不相容則拒絕連線。
 
 Message types：
 
@@ -328,6 +375,13 @@ Message types：
 - 預設 last-write-wins（mtime 較新的覆寫）
 - 如果 mtime 差距 ≤ 5 秒（幾乎同時修改），保留兩份：原檔 + `<filename>.conflict.md`
 - AI 下次讀到 `.conflict.md` 時自行合併
+- 衝突檔清理：超過 7 天未合併的 `.conflict.md`，自動採用較新版本並刪除衝突檔
+
+**檔案大小限制：**
+
+- 單一 Markdown 檔案上限：1 MB
+- 單次同步批次上限：50 MB
+- 超過限制的檔案跳過同步並記錄警告
 
 ### 角色同步
 
